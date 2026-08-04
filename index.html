@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Crediti — Sistema de Produção</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// =========================================================================
+// CONFIGURAÇÃO DO FIREBASE — troque pelos dados do SEU projeto Firebase.
+// Veja as instruções que o Claude te mandou pra saber onde pegar isso.
+// =========================================================================
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCUn7aDxaVYmDpR2GGS9c0f8sPbgFOeXvk",
+  authDomain: "crediti-producao.firebaseapp.com",
+  projectId: "crediti-producao",
+  storageBucket: "crediti-producao.firebasestorage.app",
+  messagingSenderId: "486060664110",
+  appId: "1:486060664110:web:d140bca30b1d3e733346bf"
+};
+
+const FIREBASE_NOT_CONFIGURED = FIREBASE_CONFIG.apiKey === "COLE_AQUI_SUA_API_KEY";
+window.__FIREBASE_NOT_CONFIGURED__ = FIREBASE_NOT_CONFIGURED;
+
+let db = null;
+if (!FIREBASE_NOT_CONFIGURED) {
+  firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.firestore();
+}
+
+// ---- Storage shim: implementa a mesma API (get/set/list) usando Firestore ----
+function docId(key, shared) {
+  return (shared ? "shared_" : "local_") + key;
+}
+window.storage = {
+  get: function(key, shared) {
+    if (!db) return Promise.reject(new Error("Firebase não configurado"));
+    return db.collection("crediti_storage").doc(docId(key, shared)).get().then(function(snap) {
+      if (!snap.exists) throw new Error("not found");
+      return { key: key, value: snap.data().value, shared: !!shared };
+    });
+  },
+  set: function(key, value, shared) {
+    if (!db) return Promise.reject(new Error("Firebase não configurado"));
+    return db.collection("crediti_storage").doc(docId(key, shared)).set({ value: value }).then(function() {
+      return { key: key, value: value, shared: !!shared };
+    });
+  },
+  delete: function(key, shared) {
+    if (!db) return Promise.reject(new Error("Firebase não configurado"));
+    return db.collection("crediti_storage").doc(docId(key, shared)).delete().then(function() {
+      return { key: key, deleted: true, shared: !!shared };
+    });
+  },
+  list: function(prefix, shared) {
+    if (!db) return Promise.reject(new Error("Firebase não configurado"));
+    const fullPrefix = docId(prefix || "", shared);
+    return db.collection("crediti_storage")
+      .where(firebase.firestore.FieldPath.documentId(), ">=", fullPrefix)
+      .where(firebase.firestore.FieldPath.documentId(), "<", fullPrefix + "\uf8ff")
+      .get()
+      .then(function(snap) {
+        const stripLen = (shared ? "shared_" : "local_").length;
+        const keys = [];
+        snap.forEach(function(doc) { keys.push(doc.id.slice(stripLen)); });
+        return { keys: keys, prefix: prefix, shared: !!shared };
+      });
+  }
+};
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+function makeIcon(char) {
+  return function IconCmp({ size = 16, className = "" }) {
+    return React.createElement("span", {
+      className: className,
+      style: { fontSize: size, lineHeight: 1, display: "inline-block" }
+    }, char);
+  };
+}
+const Plus = makeIcon("+");
+const Trash2 = makeIcon("\u{1F5D1}\u{FE0F}");
+const Pencil = makeIcon("\u{1F58A}\u{FE0F}");
+const X = makeIcon("\u2715");
+const Save = makeIcon("\u{1F4BE}");
+const Users = makeIcon("\u{1F465}");
+const TrendingUp = makeIcon("\u{1F4C8}");
+const ChevronDown = makeIcon("\u25BE");
+const ChevronLeft = makeIcon("\u2039");
+const ChevronRight = makeIcon("\u203A");
+const AlertCircle = makeIcon("\u26A0\uFE0F");
+const Wallet = makeIcon("\u{1F4B0}");
+const Receipt = makeIcon("\u{1F9FE}");
+const ClipboardList = makeIcon("\u{1F4CB}");
+const CheckCircle2 = makeIcon("\u2705");
+const Clock3 = makeIcon("\u{1F553}");
+const Home = makeIcon("\u{1F3E0}");
+const LayoutList = makeIcon("\u{1F4C4}");
+const PiggyBank = makeIcon("\u{1F437}");
+function Loader2({ size = 16, className = "" }) {
+  return React.createElement("span", {
+    className: "animate-spin inline-block border-2 border-current border-t-transparent rounded-full " + className,
+    style: { width: size, height: size }
+  });
+}
+
+
+const LOGO_B64 = "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";
+
+const MESES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const MESES_ABREV = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+
+const CAMPOS_VAZIOS = {
+  data: "", cliente: "", cpf: "", telefone: "", telefoneTitular: "",
+  produto: "", valorVenda: "", comissaoParceiro: "", comissaoExtra: "",
+  dataRecebimento: "", dataComissaoRecebida: "", observacoes: ""
+};
+
+const DEFAULT_SELLERS = [
+  { id: "samila", nome: "Samila" },
+  { id: "luana", nome: "Luana" },
+  { id: "irmao-luis", nome: "Irmão Luís" }
+];
+
+function parseNum(v) {
+  if (v === "" || v === null || v === undefined) return 0;
+  if (typeof v === "number") return v;
+  const cleaned = String(v).replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? 0 : n;
+}
+function formatBRL(v) {
+  return parseNum(v).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function initials(name) { return name.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase(); }
+function fmtDate(d) {
+  if (!d) return "";
+  const iso = d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+  return d;
+}
+function maskDateInput(v) {
+  const digits = v.replace(/\D/g, "").slice(0, 8);
+  if (digits.length > 4) return digits.slice(0, 2) + "/" + digits.slice(2, 4) + "/" + digits.slice(4);
+  if (digits.length > 2) return digits.slice(0, 2) + "/" + digits.slice(2);
+  return digits;
+}
+function maskCPF(v) {
+  const digits = v.replace(/\D/g, "").slice(0, 11);
+  if (digits.length > 9) return digits.slice(0, 3) + "." + digits.slice(3, 6) + "." + digits.slice(6, 9) + "-" + digits.slice(9);
+  if (digits.length > 6) return digits.slice(0, 3) + "." + digits.slice(3, 6) + "." + digits.slice(6);
+  if (digits.length > 3) return digits.slice(0, 3) + "." + digits.slice(3);
+  return digits;
+}
+function maskPhone(v) {
+  const digits = v.replace(/\D/g, "").slice(0, 11);
+  if (!digits) return "";
+  const ddd = digits.slice(0, 2);
+  const rest = digits.slice(2);
+  let out = "(" + ddd + (digits.length > 2 ? ") " : "");
+  if (rest.length > 5) out += rest.slice(0, 5) + "-" + rest.slice(5, 9);
+  else out += rest;
+  return out;
+}
+function maskCurrency(v) {
+  const digits = v.replace(/\D/g, "");
+  if (!digits) return "";
+  const value = parseInt(digits, 10) / 100;
+  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function computeBaseYears() {
+  const nowYear = new Date().getFullYear();
+  const start = 2025;
+  const end = Math.max(nowYear, 2026);
+  const years = [];
+  for (let y = start; y <= end; y++) years.push(y);
+  return years;
+}
+
+async function safeGet(key, shared) { try { return await window.storage.get(key, shared); } catch (e) { return null; } }
+async function safeSet(key, value, shared) { try { return await window.storage.set(key, value, shared); } catch (e) { return null; } }
+async function safeList(prefix, shared) { try { return await window.storage.list(prefix, shared); } catch (e) { return null; } }
+
+function CreditiProducao() {
+  const [year, setYear] = useState(2026);
+  const [availableYears, setAvailableYears] = useState(computeBaseYears());
+  const [monthIdx, setMonthIdx] = useState(6);
+  const [sellers, setSellers] = useState(DEFAULT_SELLERS);
+  const [activeSellerId, setActiveSellerId] = useState(null);
+  const [screen, setScreen] = useState("home"); // 'home' | 'seller' | 'resumo'
+  const [yearData, setYearData] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingRecord, setEditingRecord] = useState(null);
+  const [form, setForm] = useState(CAMPOS_VAZIOS);
+  const [newSellerName, setNewSellerName] = useState("");
+  const [addingSeller, setAddingSeller] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [manageSellers, setManageSellers] = useState(false);
+  const [confirmDeleteSeller, setConfirmDeleteSeller] = useState(null);
+  const [reportType, setReportType] = useState("mes");
+  const [printTrigger, setPrintTrigger] = useState(0);
+
+  function requestPrint(type) {
+    setReportType(type);
+    setPrintTrigger(t => t + 1);
+  }
+
+  useEffect(() => {
+    if (printTrigger === 0) return;
+    const id = requestAnimationFrame(() => window.print());
+    return () => cancelAnimationFrame(id);
+  }, [printTrigger]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await safeGet("crediti-sellers", true);
+      if (cancelled) return;
+      if (res && res.value) {
+        try {
+          const parsed = JSON.parse(res.value);
+          if (Array.isArray(parsed) && parsed.length > 0) { setSellers(parsed); return; }
+        } catch (e) {}
+      }
+      await safeSet("crediti-sellers", JSON.stringify(DEFAULT_SELLERS), true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await safeList("crediti-records-", true);
+      if (cancelled || !res || !res.keys) return;
+      const yrs = res.keys.map(k => parseInt(k.replace("crediti-records-", ""), 10)).filter(n => !isNaN(n));
+      const all = Array.from(new Set([...computeBaseYears(), ...yrs])).sort((a, b) => a - b);
+      setAvailableYears(all);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const res = await safeGet(`crediti-records-${year}`, true);
+      if (cancelled) return;
+      if (res && res.value) {
+        try { setYearData(JSON.parse(res.value)); } catch (e) { setYearData({}); }
+      } else { setYearData({}); }
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [year]);
+
+  const persistYearData = useCallback(async (updated) => {
+    setSaving(true);
+    const result = await safeSet(`crediti-records-${year}`, JSON.stringify(updated), true);
+    if (!result) setError("Não deu para salvar agora. Confira sua internet e tente de novo.");
+    setSaving(false);
+  }, [year]);
+
+  const persistSellers = useCallback(async (updated) => {
+    setSaving(true);
+    const result = await safeSet("crediti-sellers", JSON.stringify(updated), true);
+    if (!result) setError("Não deu para salvar o vendedor. Tente de novo.");
+    setSaving(false);
+  }, []);
+
+  function sellerTotalsForMonth(sellerId, mIdx) {
+    const recs = (yearData[mIdx] && yearData[mIdx][sellerId]) || [];
+    return recs.reduce((acc, r) => {
+      acc.valorVenda += parseNum(r.valorVenda);
+      acc.comissaoParceiro += parseNum(r.comissaoParceiro);
+      acc.comissaoExtra += parseNum(r.comissaoExtra);
+      acc.count += 1;
+      return acc;
+    }, { valorVenda: 0, comissaoParceiro: 0, comissaoExtra: 0, count: 0 });
+  }
+
+  const monthRecords = useMemo(() => (activeSellerId && yearData[monthIdx] && yearData[monthIdx][activeSellerId]) || [], [yearData, monthIdx, activeSellerId]);
+  const monthSummary = useMemo(() => sellers.map(s => ({ seller: s, totals: sellerTotalsForMonth(s.id, monthIdx) })), [sellers, yearData, monthIdx]);
+  const monthGrandTotal = useMemo(() => monthSummary.reduce((acc, s) => {
+    acc.valorVenda += s.totals.valorVenda; acc.comissaoParceiro += s.totals.comissaoParceiro;
+    acc.comissaoExtra += s.totals.comissaoExtra; acc.count += s.totals.count;
+    return acc;
+  }, { valorVenda: 0, comissaoParceiro: 0, comissaoExtra: 0, count: 0 }), [monthSummary]);
+
+  function monthProductSummary() {
+    const map = {};
+    sellers.forEach(s => {
+      const recs = (yearData[monthIdx] && yearData[monthIdx][s.id]) || [];
+      recs.forEach(r => {
+        const key = (r.produto || "").trim() || "Não informado";
+        if (!map[key]) map[key] = { produto: key, valorVenda: 0, count: 0 };
+        map[key].valorVenda += parseNum(r.valorVenda);
+        map[key].count += 1;
+      });
+    });
+    return Object.values(map).sort((a, b) => b.valorVenda - a.valorVenda);
+  }
+
+  function annualProductSummary() {
+    const map = {};
+    for (let mIdx = 0; mIdx < 12; mIdx++) {
+      const monthData = yearData[mIdx] || {};
+      sellers.forEach(s => {
+        const recs = monthData[s.id] || [];
+        recs.forEach(r => {
+          const key = (r.produto || "").trim() || "Não informado";
+          if (!map[key]) map[key] = { produto: key, valorVenda: 0, count: 0 };
+          map[key].valorVenda += parseNum(r.valorVenda);
+          map[key].count += 1;
+        });
+      });
+    }
+    return Object.values(map).sort((a, b) => b.valorVenda - a.valorVenda);
+  }
+
+  function annualSummary() {
+    const perSeller = sellers.map(s => ({ seller: s, valorVenda: 0, comissao: 0, recebidoValor: 0, pendenteValor: 0, count: 0 }));
+    const perSellerMap = {};
+    perSeller.forEach(p => { perSellerMap[p.seller.id] = p; });
+    const perMonth = MESES.map((m, i) => ({ idx: i, nome: m, valorVenda: 0, count: 0 }));
+    const totals = { valorVenda: 0, comissao: 0, recebidoValor: 0, pendenteValor: 0, count: 0 };
+    for (let mIdx = 0; mIdx < 12; mIdx++) {
+      const monthData = yearData[mIdx] || {};
+      sellers.forEach(s => {
+        const recs = monthData[s.id] || [];
+        recs.forEach(r => {
+          const venda = parseNum(r.valorVenda);
+          const com = parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra);
+          const p = perSellerMap[s.id];
+          p.valorVenda += venda; p.comissao += com; p.count += 1;
+          if (r.dataRecebimento) p.recebidoValor += venda; else p.pendenteValor += venda;
+          perMonth[mIdx].valorVenda += venda; perMonth[mIdx].count += 1;
+          totals.valorVenda += venda; totals.comissao += com; totals.count += 1;
+          if (r.dataRecebimento) totals.recebidoValor += venda; else totals.pendenteValor += venda;
+        });
+      });
+    }
+    return { perSeller, perMonth, totals };
+  }
+
+  const activeSeller = sellers.find(s => s.id === activeSellerId);
+  const activeSellerTotals = activeSellerId ? sellerTotalsForMonth(activeSellerId, monthIdx) : null;
+
+  function openNewRecord() { setEditingRecord(null); setForm({ ...CAMPOS_VAZIOS }); setModalOpen(true); }
+  function openEditRecord(rec) { setEditingRecord(rec.id); setForm({ ...rec }); setModalOpen(true); }
+
+  async function saveRecord() {
+    if (!form.cliente.trim()) { setError("Informe o nome do cliente."); return; }
+    const updated = JSON.parse(JSON.stringify(yearData));
+    if (!updated[monthIdx]) updated[monthIdx] = {};
+    if (!updated[monthIdx][activeSellerId]) updated[monthIdx][activeSellerId] = [];
+    if (editingRecord) {
+      updated[monthIdx][activeSellerId] = updated[monthIdx][activeSellerId].map(r => r.id === editingRecord ? { ...form, id: editingRecord } : r);
+    } else {
+      updated[monthIdx][activeSellerId].push({ ...form, id: uid() });
+    }
+    setYearData(updated); setModalOpen(false); setError("");
+    await persistYearData(updated);
+  }
+
+  async function deleteRecord(id) {
+    const updated = JSON.parse(JSON.stringify(yearData));
+    if (updated[monthIdx] && updated[monthIdx][activeSellerId]) {
+      updated[monthIdx][activeSellerId] = updated[monthIdx][activeSellerId].filter(r => r.id !== id);
+    }
+    setYearData(updated); setConfirmDelete(null);
+    await persistYearData(updated);
+  }
+
+  async function addSeller() {
+    const name = newSellerName.trim();
+    if (!name) return;
+    const id = name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || uid();
+    if (sellers.some(s => s.id === id)) { setError("Já existe um vendedor com esse nome."); return; }
+    const updated = [...sellers, { id, nome: name }];
+    setSellers(updated); setNewSellerName(""); setAddingSeller(false);
+    await persistSellers(updated);
+  }
+
+  async function removeSeller(id) {
+    if (sellers.length <= 1) return;
+    const updated = sellers.filter(s => s.id !== id);
+    setSellers(updated);
+    if (activeSellerId === id) { setActiveSellerId(null); setScreen("home"); }
+    await persistSellers(updated);
+  }
+
+  function addYear() {
+    const next = Math.max(...availableYears) + 1;
+    setAvailableYears([...availableYears, next]);
+    setYear(next);
+  }
+
+  function goToSeller(id) { setActiveSellerId(id); setScreen("seller"); }
+
+  return (
+    <>
+    <div style={{ fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" }} className="app-shell min-h-screen bg-[#FFF7DC] text-[#17160F] pb-20 sm:pb-8">
+      <style>{`
+        .num{font-variant-numeric:tabular-nums}
+        ::-webkit-scrollbar{height:6px;width:6px}
+        ::-webkit-scrollbar-thumb{background:#E9D98A;border-radius:4px}
+        .input{width:100%;border:1.5px solid #E7DDAE;border-radius:10px;padding:9px 11px;font-size:13.5px;font-family:inherit;outline:none;transition:.15s;background:#fff;color:#17160F}
+        .input:focus{border-color:#D9A400;box-shadow:0 0 0 3px rgba(217,164,0,.18)}
+        .input::placeholder{color:#B8AF87}
+        .print-report{display:none}
+        @media print{
+          .app-shell{display:none !important}
+          .print-report{display:block !important}
+        }
+      `}</style>
+
+      {/* ===== Top bar ===== */}
+      <header className="sticky top-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-b border-[#EFE2A8]">
+        <div className="max-w-[860px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <img src={`data:image/png;base64,${LOGO_B64}`} alt="Crediti" className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex-shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[14.5px] sm:text-[16px] font-extrabold text-[#17160F] tracking-tight leading-tight truncate">Crediti</div>
+              <div className="text-[9.5px] sm:text-[10.5px] text-[#8A7A1F] font-bold tracking-[0.12em] -mt-0.5">SOLUÇÕES FINANCEIRAS</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {saving && <Loader2 size={14} className="animate-spin text-[#8A7A1F]" />}
+            <div className="relative">
+              <select value={year} onChange={e => setYear(parseInt(e.target.value, 10))}
+                className="appearance-none bg-white text-[#17160F] text-[13px] font-bold pl-3 pr-7 py-1.5 rounded-lg border border-[#E7DDAE] focus:outline-none focus:ring-2 focus:ring-[#D9A400] cursor-pointer">
+                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-[#8A7A1F]" />
+            </div>
+            <button onClick={addYear} title="Adicionar próximo ano" className="hidden sm:block text-[12px] font-bold bg-white hover:bg-[#FFF1B8] border border-[#E7DDAE] text-[#8A7A1F] px-2.5 py-1.5 rounded-lg transition">+ ano</button>
+          </div>
+        </div>
+      </header>
+
+      {error && (
+        <div className="bg-[#FBE4E1] text-[#A3271E] text-[13px] px-4 sm:px-6 py-2.5 flex items-center gap-2 border-b border-[#f0c4bf]">
+          <AlertCircle size={15} className="flex-shrink-0" />
+          <span className="flex-1">{error}</span>
+          <button onClick={() => setError("")} className="text-[#A3271E]/60 hover:text-[#A3271E]"><X size={14} /></button>
+        </div>
+      )}
+
+      <div className="max-w-[860px] mx-auto px-4 sm:px-6 pt-5">
+
+        {/* ============ HOME ============ */}
+        {screen === "home" && (
+          <>
+            <div className="mb-1 text-[20px] sm:text-[23px] font-extrabold text-[#17160F] tracking-tight">Produção de {MESES[monthIdx]}</div>
+            <div className="mb-5 text-[13px] text-[#7A7154]">Escolha o vendedor para lançar ou conferir os dados de {year}.</div>
+
+            {/* Month picker */}
+            <div className="flex items-center gap-2 mb-6">
+              <button onClick={() => setMonthIdx(i => (i + 11) % 12)} className="w-8 h-8 rounded-full bg-white border border-[#E7DDAE] flex items-center justify-center text-[#8A7A1F] hover:bg-[#FFF1B8] transition flex-shrink-0"><ChevronLeft size={15} /></button>
+              <div className="flex gap-1.5 overflow-x-auto flex-1">
+                {MESES.map((m, i) => (
+                  <button key={m} onClick={() => setMonthIdx(i)}
+                    className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold transition ${monthIdx === i ? "bg-[#17160F] text-[#FFD447]" : "bg-white text-[#7A7154] border border-[#E7DDAE] hover:bg-[#FFF1B8]"}`}>
+                    <span className="sm:hidden">{MESES_ABREV[i]}</span><span className="hidden sm:inline">{m}</span>
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => setMonthIdx(i => (i + 1) % 12)} className="w-8 h-8 rounded-full bg-white border border-[#E7DDAE] flex items-center justify-center text-[#8A7A1F] hover:bg-[#FFF1B8] transition flex-shrink-0"><ChevronRight size={15} /></button>
+            </div>
+
+            {/* Office summary strip */}
+            <button onClick={() => setScreen("resumo")} className="w-full text-left bg-[#17160F] rounded-2xl p-4 sm:p-5 mb-6 flex items-center justify-between gap-4 hover:opacity-95 transition">
+              <div>
+                <div className="text-[10.5px] font-bold text-[#FFD447] uppercase tracking-wider mb-1">Produção total do escritório</div>
+                <div className="text-[22px] sm:text-[26px] font-extrabold num text-white">{formatBRL(monthGrandTotal.valorVenda)}</div>
+                <div className="text-[11.5px] text-white/50 mt-0.5">{monthGrandTotal.count} lançamento(s) em {MESES[monthIdx].toLowerCase()}</div>
+              </div>
+              <div className="w-10 h-10 rounded-full bg-[#FFD447] flex items-center justify-center flex-shrink-0"><TrendingUp size={18} className="text-[#17160F]" /></div>
+            </button>
+
+            {/* Seller accounts list */}
+            <div className="flex items-center justify-between mb-2 px-1">
+              <div className="text-[11px] font-extrabold text-[#8A7A1F] uppercase tracking-wider">Vendedores</div>
+              <button
+                onClick={() => { setManageSellers(v => !v); setConfirmDeleteSeller(null); }}
+                className={`text-[11.5px] font-bold px-2.5 py-1 rounded-full transition ${manageSellers ? "bg-[#17160F] text-[#FFD447]" : "text-[#8A7A1F] hover:bg-[#FFF1B8]"}`}
+              >
+                {manageSellers ? "Concluir" : "Gerenciar"}
+              </button>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-[#EFE2A8] overflow-hidden divide-y divide-[#F5EDCB] shadow-[0_1px_2px_rgba(120,100,0,0.05)]">
+              {sellers.map(s => {
+                const t = sellerTotalsForMonth(s.id, monthIdx);
+
+                if (manageSellers) {
+                  return (
+                    <div key={s.id} className="flex items-center gap-3 px-4 py-3.5">
+                      <span className="w-10 h-10 rounded-full bg-[#FFEDA0] text-[#8A7A1F] text-[13px] font-extrabold flex items-center justify-center flex-shrink-0">{initials(s.nome)}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-[14px] text-[#17160F] truncate">{s.nome}</div>
+                        <div className="text-[11.5px] text-[#8A8672]">{t.count} lançamento(s) em {MESES[monthIdx].toLowerCase()}</div>
+                      </div>
+                      {sellers.length > 1 ? (
+                        confirmDeleteSeller === s.id ? (
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className="text-[11.5px] text-[#7A7154]">remover?</span>
+                            <button onClick={() => { removeSeller(s.id); setConfirmDeleteSeller(null); }} className="text-[12px] font-bold text-white bg-[#A3271E] px-2.5 py-1.5 rounded-lg">Sim</button>
+                            <button onClick={() => setConfirmDeleteSeller(null)} className="text-[12px] font-bold text-[#7A7154] bg-[#F5EDCB] px-2.5 py-1.5 rounded-lg">Não</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setConfirmDeleteSeller(s.id)} title="Remover vendedor"
+                            className="flex items-center gap-1.5 text-[12px] font-bold text-[#A3271E] border border-[#F0C4BF] bg-[#FBE4E1] px-2.5 py-1.5 rounded-lg flex-shrink-0 hover:bg-[#f5d3ce] transition">
+                            <Trash2 size={13} /> Remover
+                          </button>
+                        )
+                      ) : (
+                        <span className="text-[11px] text-[#C9BE85] flex-shrink-0">único vendedor</span>
+                      )}
+                    </div>
+                  );
+                }
+
+                return (
+                  <button key={s.id} onClick={() => goToSeller(s.id)} className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-[#FFFBEE] transition text-left">
+                    <span className="w-10 h-10 rounded-full bg-[#FFEDA0] text-[#8A7A1F] text-[13px] font-extrabold flex items-center justify-center flex-shrink-0">{initials(s.nome)}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-[14px] text-[#17160F] truncate">{s.nome}</div>
+                      <div className="text-[11.5px] text-[#8A8672]">{t.count} lançamento(s)</div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="num font-extrabold text-[14px] text-[#17160F]">{formatBRL(t.valorVenda)}</div>
+                      <div className="text-[11px] text-[#8A7A1F]">produção</div>
+                    </div>
+                    <ChevronRight size={16} className="text-[#C9BE85] flex-shrink-0" />
+                  </button>
+                );
+              })}
+
+              {!manageSellers && (
+                <div className="px-4 py-3">
+                  {addingSeller ? (
+                    <div className="flex items-center gap-1.5">
+                      <input autoFocus value={newSellerName} onChange={e => setNewSellerName(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") addSeller(); if (e.key === "Escape") setAddingSeller(false); }}
+                        placeholder="Nome do vendedor" className="input flex-1" />
+                      <button onClick={addSeller} className="w-9 h-9 rounded-lg bg-[#17160F] text-[#FFD447] flex items-center justify-center flex-shrink-0"><Save size={14} /></button>
+                      <button onClick={() => { setAddingSeller(false); setNewSellerName(""); }} className="w-9 h-9 rounded-lg bg-[#F5EDCB] flex items-center justify-center flex-shrink-0"><X size={14} /></button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setAddingSeller(true)} className="w-full flex items-center gap-2 text-[13px] font-bold text-[#8A7A1F] hover:text-[#17160F] transition py-1">
+                      <span className="w-10 h-10 rounded-full border-2 border-dashed border-[#E7DDAE] flex items-center justify-center flex-shrink-0"><Plus size={15} /></span>
+                      Adicionar vendedor
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ============ SELLER (extrato) ============ */}
+        {screen === "seller" && activeSeller && (
+          <>
+            <button onClick={() => setScreen("home")} className="flex items-center gap-1 text-[13px] font-bold text-[#8A7A1F] hover:text-[#17160F] mb-3 transition"><ChevronLeft size={16} /> Vendedores</button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <span className="w-12 h-12 rounded-full bg-[#FFEDA0] text-[#8A7A1F] text-[15px] font-extrabold flex items-center justify-center flex-shrink-0">{initials(activeSeller.nome)}</span>
+              <div className="min-w-0">
+                <div className="text-[19px] sm:text-[21px] font-extrabold text-[#17160F] tracking-tight truncate">{activeSeller.nome}</div>
+                <div className="text-[12.5px] text-[#7A7154]">Produção de {MESES[monthIdx]} · {year}</div>
+              </div>
+            </div>
+
+            {/* Month chips */}
+            <div className="flex gap-1.5 overflow-x-auto mb-4 pb-0.5">
+              {MESES.map((m, i) => (
+                <button key={m} onClick={() => setMonthIdx(i)}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold transition ${monthIdx === i ? "bg-[#17160F] text-[#FFD447]" : "bg-white text-[#7A7154] border border-[#E7DDAE] hover:bg-[#FFF1B8]"}`}>
+                  {MESES_ABREV[i]}
+                </button>
+              ))}
+            </div>
+
+            {/* KPI strip */}
+            <div className="grid grid-cols-3 gap-2.5 mb-5">
+              <StatCard label="Produção" value={formatBRL(activeSellerTotals.valorVenda)} strong />
+              <StatCard label="Com. por fora" value={formatBRL(activeSellerTotals.comissaoExtra)} />
+              <StatCard label="Com. parceiro" value={formatBRL(activeSellerTotals.comissaoParceiro)} />
+            </div>
+
+            <div className="flex items-center justify-between mb-2 px-0.5">
+              <div className="text-[11px] font-extrabold text-[#8A7A1F] uppercase tracking-wider">Extrato de vendas</div>
+              <button onClick={openNewRecord} className="flex items-center gap-1.5 bg-[#17160F] text-[#FFD447] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#2a2818] transition">
+                <Plus size={14} /> Novo lançamento
+              </button>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-[#EFE2A8] overflow-hidden shadow-[0_1px_2px_rgba(120,100,0,0.05)]">
+              {loading ? (
+                <div className="py-16 flex items-center justify-center text-[#B8AF87] gap-2 text-sm"><Loader2 size={16} className="animate-spin" /> Carregando...</div>
+              ) : monthRecords.length === 0 ? (
+                <div className="py-14 text-center text-[#B8AF87] text-sm px-6">Nenhum lançamento em {MESES[monthIdx].toLowerCase()}.<br />Toque em "Novo lançamento" para registrar a primeira venda.</div>
+              ) : (
+                <div className="divide-y divide-[#F5EDCB]">
+                  {monthRecords.map(r => (
+                    <div key={r.id} className="px-4 py-3.5 hover:bg-[#FFFBEE] transition group">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-bold text-[14px] text-[#17160F] truncate">{r.cliente}</div>
+                          <div className="text-[11.5px] text-[#8A8672] truncate num">{fmtDate(r.data) || "sem data"} · {r.produto || "produto não informado"}</div>
+                          {(r.cpf || r.telefone) && <div className="text-[11px] text-[#B8AF87] num mt-0.5">{r.cpf || "CPF —"} {r.telefone ? `· ${r.telefone}` : ""}</div>}
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <div className="num font-extrabold text-[15px] text-[#17160F]">{formatBRL(r.valorVenda)}</div>
+                          {r.dataRecebimento
+                            ? <span className="inline-flex items-center gap-1 text-[#1E8E5A] font-bold text-[11px] mt-0.5"><CheckCircle2 size={11} />recebido {fmtDate(r.dataRecebimento)}</span>
+                            : <span className="inline-flex items-center gap-1 text-[#B7791F] text-[11px] mt-0.5"><Clock3 size={11} />pendente</span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between mt-2 flex-wrap gap-y-1">
+                        <div className="text-[11px] text-[#8A8672]">
+                          com. por fora <b className="num text-[#17160F]">{formatBRL(r.comissaoExtra)}</b> · com. parceiro <b className="num text-[#17160F]">{formatBRL(r.comissaoParceiro)}</b>
+                          {" · "}
+                          {r.dataComissaoRecebida
+                            ? <span className="inline-flex items-center gap-1 text-[#1E8E5A] font-bold"><CheckCircle2 size={11} />comissão recebida {fmtDate(r.dataComissaoRecebida)}</span>
+                            : <span className="inline-flex items-center gap-1 text-[#B7791F]"><Clock3 size={11} />comissão pendente</span>}
+                        </div>
+                        <div className="flex items-center gap-1 transition">
+                          <button onClick={() => openEditRecord(r)} className="w-7 h-7 rounded-md hover:bg-[#F5EDCB] flex items-center justify-center text-[#7A7154]"><Pencil size={15} /></button>
+                          {confirmDelete === r.id ? (
+                            <>
+                              <button onClick={() => deleteRecord(r.id)} className="text-[11px] font-bold text-[#A3271E] px-1">confirmar</button>
+                              <button onClick={() => setConfirmDelete(null)} className="text-[11px] text-[#8A8672] px-1">cancelar</button>
+                            </>
+                          ) : (
+                            <button onClick={() => setConfirmDelete(r.id)} className="w-7 h-7 rounded-md hover:bg-[#FBE4E1] flex items-center justify-center text-[#7A7154] hover:text-[#A3271E]"><Trash2 size={13} /></button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="px-4 py-3 bg-[#FFFBEE] flex items-center justify-between">
+                    <span className="text-[11.5px] font-extrabold text-[#17160F] uppercase tracking-wide">Total do mês</span>
+                    <span className="num font-extrabold text-[#17160F]">{formatBRL(activeSellerTotals.valorVenda)}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ============ RESUMO ============ */}
+        {screen === "resumo" && (
+          <>
+            <button onClick={() => setScreen("home")} className="flex items-center gap-1 text-[13px] font-bold text-[#8A7A1F] hover:text-[#17160F] mb-3 transition"><ChevronLeft size={16} /> Início</button>
+            <div className="mb-3">
+              <div className="text-[19px] sm:text-[21px] font-extrabold text-[#17160F] tracking-tight">Resumo do escritório</div>
+              <div className="text-[12.5px] text-[#7A7154] mt-0.5">{MESES[monthIdx]} · {year}</div>
+            </div>
+            <div className="flex items-center gap-2 mb-3">
+              <button onClick={() => requestPrint("mes")}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 bg-[#17160F] text-[#FFD447] text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-[#2a2818] transition">
+                <Receipt size={14} /> Fechar mês (PDF)
+              </button>
+              <button onClick={() => requestPrint("ano")}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 bg-white border border-[#E7DDAE] text-[#17160F] text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-[#FFF1B8] transition">
+                <ClipboardList size={14} /> Fechar ano (PDF)
+              </button>
+            </div>
+            <div className="h-1"></div>
+
+            <div className="flex gap-1.5 overflow-x-auto mb-5 pb-0.5">
+              {MESES.map((m, i) => (
+                <button key={m} onClick={() => setMonthIdx(i)}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold transition ${monthIdx === i ? "bg-[#17160F] text-[#FFD447]" : "bg-white text-[#7A7154] border border-[#E7DDAE] hover:bg-[#FFF1B8]"}`}>
+                  {MESES_ABREV[i]}
+                </button>
+              ))}
+            </div>
+
+            <div className="bg-white rounded-2xl border border-[#EFE2A8] overflow-hidden divide-y divide-[#F5EDCB] shadow-[0_1px_2px_rgba(120,100,0,0.05)] mb-4">
+              {monthSummary.map(({ seller, totals }) => (
+                <button key={seller.id} onClick={() => goToSeller(seller.id)} className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-[#FFFBEE] transition text-left">
+                  <span className="w-10 h-10 rounded-full bg-[#FFEDA0] text-[#8A7A1F] text-[13px] font-extrabold flex items-center justify-center flex-shrink-0">{initials(seller.nome)}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-bold text-[14px] text-[#17160F] truncate">{seller.nome}</div>
+                    <div className="text-[11.5px] text-[#8A8672]">{totals.count} lançamento(s) · com. {formatBRL(totals.comissaoParceiro + totals.comissaoExtra)}</div>
+                  </div>
+                  <div className="num font-extrabold text-[14px] text-[#17160F] flex-shrink-0">{formatBRL(totals.valorVenda)}</div>
+                  <ChevronRight size={16} className="text-[#C9BE85] flex-shrink-0" />
+                </button>
+              ))}
+            </div>
+
+            <div className="bg-[#17160F] rounded-2xl p-4 sm:p-5">
+              <div className="text-[10.5px] font-bold text-[#FFD447] uppercase tracking-wider mb-2">Total geral do mês</div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <div className="text-[10px] text-white/40 uppercase tracking-wide mb-0.5">Produção</div>
+                  <div className="num font-extrabold text-white text-[15px] sm:text-[17px]">{formatBRL(monthGrandTotal.valorVenda)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-white/40 uppercase tracking-wide mb-0.5">Com. por fora</div>
+                  <div className="num font-extrabold text-white text-[15px] sm:text-[17px]">{formatBRL(monthGrandTotal.comissaoExtra)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-white/40 uppercase tracking-wide mb-0.5">Com. parceiro</div>
+                  <div className="num font-extrabold text-white text-[15px] sm:text-[17px]">{formatBRL(monthGrandTotal.comissaoParceiro)}</div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ===== Bottom nav (mobile, bank-app style) ===== */}
+      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-t border-[#EFE2A8] flex items-stretch">
+        <NavBtn icon={<Home size={18} />} label="Início" active={screen === "home"} onClick={() => setScreen("home")} />
+        <NavBtn icon={<LayoutList size={18} />} label="Extrato" active={screen === "seller"} onClick={() => { if (activeSellerId) setScreen("seller"); else if (sellers[0]) goToSeller(sellers[0].id); }} />
+        <NavBtn icon={<PiggyBank size={18} />} label="Resumo" active={screen === "resumo"} onClick={() => setScreen("resumo")} />
+      </nav>
+
+      {/* ===== Modal ===== */}
+      {modalOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50" onClick={() => setModalOpen(false)}>
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-[#F0EAC8] flex items-center justify-between sticky top-0 bg-white z-10">
+              <div className="font-extrabold text-[15px] text-[#17160F]">{editingRecord ? "Editar lançamento" : "Novo lançamento"} — {activeSeller?.nome}</div>
+              <button onClick={() => setModalOpen(false)} className="w-8 h-8 rounded-full hover:bg-[#F5EDCB] flex items-center justify-center"><X size={16} /></button>
+            </div>
+            <div className="p-5 space-y-3.5">
+              <div className="grid grid-cols-2 gap-4 sm:gap-5">
+                <Field label="Data da venda">
+                  <input
+                    type="text" inputMode="numeric" maxLength={10}
+                    value={form.data}
+                    onChange={e => setForm({ ...form, data: maskDateInput(e.target.value) })}
+                    className="input" placeholder="dd/mm/aaaa"
+                  />
+                </Field>
+                <Field label="Cliente recebeu em">
+                  <input
+                    type="text" inputMode="numeric" maxLength={10}
+                    value={form.dataRecebimento}
+                    onChange={e => setForm({ ...form, dataRecebimento: maskDateInput(e.target.value) })}
+                    className="input" placeholder="dd/mm/aaaa"
+                  />
+                </Field>
+              </div>
+              <Field label="Nome do cliente"><input value={form.cliente} onChange={e => setForm({ ...form, cliente: e.target.value })} className="input" placeholder="Ex: José da Silva" /></Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="CPF"><input value={form.cpf} onChange={e => setForm({ ...form, cpf: maskCPF(e.target.value) })} className="input" placeholder="000.000.000-00" inputMode="numeric" /></Field>
+                <Field label="Telefone"><input value={form.telefone} onChange={e => setForm({ ...form, telefone: maskPhone(e.target.value) })} className="input" placeholder="(85) 99000-0000" inputMode="numeric" /></Field>
+              </div>
+              <Field label="Telefone é de quem? (se não for do cliente)"><input value={form.telefoneTitular} onChange={e => setForm({ ...form, telefoneTitular: e.target.value })} className="input" placeholder="Ex: filha — Maria" /></Field>
+              <Field label="Produto"><input value={form.produto} onChange={e => setForm({ ...form, produto: e.target.value })} className="input" placeholder="Ex: Consignado INSS" /></Field>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="Valor da venda"><input value={form.valorVenda} onChange={e => setForm({ ...form, valorVenda: maskCurrency(e.target.value) })} className="input" placeholder="R$ 0,00" inputMode="numeric" /></Field>
+                <Field label="Com. por fora"><input value={form.comissaoExtra} onChange={e => setForm({ ...form, comissaoExtra: maskCurrency(e.target.value) })} className="input" placeholder="R$ 0,00" inputMode="numeric" /></Field>
+                <Field label="Com. parceiro"><input value={form.comissaoParceiro} onChange={e => setForm({ ...form, comissaoParceiro: maskCurrency(e.target.value) })} className="input" placeholder="R$ 0,00" inputMode="numeric" /></Field>
+              </div>
+              <Field label="Vendedor recebeu a comissão em">
+                <input
+                  type="text" inputMode="numeric" maxLength={10}
+                  value={form.dataComissaoRecebida}
+                  onChange={e => setForm({ ...form, dataComissaoRecebida: maskDateInput(e.target.value) })}
+                  className="input" placeholder="dd/mm/aaaa — deixe em branco se ainda não recebeu"
+                />
+              </Field>
+              <Field label="Observações"><textarea value={form.observacoes} onChange={e => setForm({ ...form, observacoes: e.target.value })} className="input min-h-[70px] resize-none" placeholder="Anotações adicionais..." /></Field>
+            </div>
+            <div className="px-5 py-4 border-t border-[#F0EAC8] flex items-center gap-2 justify-end sticky bottom-0 bg-white">
+              <button onClick={() => setModalOpen(false)} className="px-4 py-2 rounded-lg text-[13px] font-bold text-[#7A7154] hover:bg-[#F5EDCB] transition">Cancelar</button>
+              <button onClick={saveRecord} className="px-4 py-2 rounded-lg text-[13px] font-bold bg-[#FFD447] text-[#17160F] hover:bg-[#f0c62f] transition flex items-center gap-1.5"><Save size={14} /> Salvar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <footer className="hidden sm:block text-center text-[11px] text-[#B8AF87] pt-8 pb-4">Crediti Soluções Financeiras · dados salvos automaticamente na nuvem</footer>
+    </div>
+
+    {/* ===== Printable letterhead report (visible only when printing / saving as PDF) ===== */}
+    <div className="print-report" style={{ fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif", color: "#17160F", padding: "28px 34px", background: "#fff" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, borderBottom: "3px solid #17160F", paddingBottom: 16, marginBottom: 18 }}>
+        <img src={`data:image/png;base64,${LOGO_B64}`} alt="Crediti" style={{ width: 62, height: 62, borderRadius: "50%", flexShrink: 0 }} />
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>Crediti Soluções Financeiras</div>
+          <div style={{ fontSize: 11, color: "#5b5744", marginTop: 2 }}>Rua Dom Aureliano Matos, 1741 — Loja A — Centro — Itapajé/CE</div>
+        </div>
+      </div>
+
+      {reportType === "mes" ? (
+        <>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>Relatório de Produção — {MESES[monthIdx]} / {year}</div>
+            <div style={{ fontSize: 10, color: "#8a8672" }}>Gerado em {new Date().toLocaleDateString("pt-BR")}</div>
+          </div>
+
+          {sellers.map(s => {
+            const recs = (yearData[monthIdx] && yearData[monthIdx][s.id]) || [];
+            if (recs.length === 0) return null;
+            const subtotalComissao = recs.reduce((acc, r) => acc + parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra), 0);
+            const subtotalVenda = recs.reduce((acc, r) => acc + parseNum(r.valorVenda), 0);
+            return (
+              <div key={s.id} style={{ marginBottom: 22, breakInside: "avoid" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, background: "#FFF1B8", padding: "6px 10px", borderRadius: 6, marginBottom: 6 }}>
+                  {s.nome} — {recs.length} lançamento(s)
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1.5px solid #17160F" }}>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Data</th>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Cliente</th>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>CPF</th>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
+                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
+                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Comissão paga ao vendedor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recs.map(r => (
+                      <tr key={r.id} style={{ borderBottom: "1px solid #E7DDAE" }}>
+                        <td style={{ padding: "5px 6px" }}>{fmtDate(r.data) || "—"}</td>
+                        <td style={{ padding: "5px 6px" }}>{r.cliente}</td>
+                        <td style={{ padding: "5px 6px" }}>{r.cpf || "—"}</td>
+                        <td style={{ padding: "5px 6px" }}>{r.produto || "—"}</td>
+                        <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(r.valorVenda)}</td>
+                        <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ borderTop: "2px solid #17160F" }}>
+                      <td colSpan={4} style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>Subtotal {s.nome}</td>
+                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalVenda)}</td>
+                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalComissao)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            );
+          })}
+
+          <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, marginTop: 4, breakInside: "avoid" }}>Valores liberados por produto</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 16, breakInside: "avoid" }}>
+            <thead>
+              <tr style={{ borderBottom: "1.5px solid #17160F" }}>
+                <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
+                <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
+                <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthProductSummary().map(p => (
+                <tr key={p.produto} style={{ borderBottom: "1px solid #E7DDAE" }}>
+                  <td style={{ padding: "5px 6px" }}>{p.produto}</td>
+                  <td style={{ padding: "5px 6px", textAlign: "right" }}>{p.count}</td>
+                  <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(p.valorVenda)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div style={{ marginTop: 10, padding: "12px 14px", background: "#17160F", color: "#fff", borderRadius: 8, display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800 }}>
+            <span>TOTAL GERAL DA COMPETÊNCIA</span>
+            <span>Valor liberado {formatBRL(monthGrandTotal.valorVenda)} · Comissão paga aos vendedores {formatBRL(monthGrandTotal.comissaoParceiro + monthGrandTotal.comissaoExtra)}</span>
+          </div>
+        </>
+      ) : (
+        (() => {
+          const ann = annualSummary();
+          return (
+            <>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
+                <div style={{ fontSize: 15, fontWeight: 800 }}>Relatório Anual de Produção — 01/01 a 31/12 de {year}</div>
+                <div style={{ fontSize: 10, color: "#8a8672" }}>Gerado em {new Date().toLocaleDateString("pt-BR")}</div>
+              </div>
+
+              <div style={{ marginBottom: 20, padding: "14px 16px", background: "#17160F", color: "#fff", borderRadius: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#FFD447", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Total do ano — {year}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Total emprestado</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.valorVenda)}</div></div>
+                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Recebido pelo cliente</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.recebidoValor)}</div></div>
+                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Pendente</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.pendenteValor)}</div></div>
+                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Comissões pagas</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.comissao)}</div></div>
+                </div>
+                <div style={{ fontSize: 10, color: "#ffffff88", marginTop: 8 }}>{ann.totals.count} lançamento(s) no ano</div>
+              </div>
+
+              <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6 }}>Por vendedor</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 22 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1.5px solid #17160F" }}>
+                    <th style={{ textAlign: "left", padding: "5px 6px" }}>Vendedor</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Total emprestado</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Recebido</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Pendente</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Comissão paga ao vendedor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ann.perSeller.map(p => (
+                    <tr key={p.seller.id} style={{ borderBottom: "1px solid #E7DDAE" }}>
+                      <td style={{ padding: "5px 6px", fontWeight: 700 }}>{p.seller.nome}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{p.count}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(p.valorVenda)}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(p.recebidoValor)}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(p.pendenteValor)}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(p.comissao)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: "2px solid #17160F" }}>
+                    <td style={{ padding: "6px", fontWeight: 800 }}>TOTAL</td>
+                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{ann.totals.count}</td>
+                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.valorVenda)}</td>
+                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.recebidoValor)}</td>
+                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.pendenteValor)}</td>
+                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.comissao)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+
+              <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, breakInside: "avoid" }}>Valores liberados por produto no ano</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 22, breakInside: "avoid" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1.5px solid #17160F" }}>
+                    <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {annualProductSummary().map(p => (
+                    <tr key={p.produto} style={{ borderBottom: "1px solid #E7DDAE" }}>
+                      <td style={{ padding: "5px 6px" }}>{p.produto}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{p.count}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(p.valorVenda)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, breakInside: "avoid" }}>Por mês</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, breakInside: "avoid" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1.5px solid #17160F" }}>
+                    <th style={{ textAlign: "left", padding: "5px 6px" }}>Mês</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
+                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ann.perMonth.map(m => (
+                    <tr key={m.idx} style={{ borderBottom: "1px solid #E7DDAE" }}>
+                      <td style={{ padding: "5px 6px" }}>{m.nome}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{m.count}</td>
+                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(m.valorVenda)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div style={{ marginTop: 18, padding: "14px 16px", background: "#17160F", color: "#fff", borderRadius: 8, breakInside: "avoid" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#FFD447", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                  Fechamento {year} — Total geral (todos os vendedores)
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: "#ffffff88" }}>Total liberado para clientes no ano</div>
+                    <div style={{ fontSize: 17, fontWeight: 800 }}>{formatBRL(ann.totals.valorVenda)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: "#ffffff88" }}>Total de comissão paga aos vendedores no ano</div>
+                    <div style={{ fontSize: 17, fontWeight: 800 }}>{formatBRL(ann.totals.comissao)}</div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: "#ffffff88", marginTop: 8 }}>{ann.totals.count} lançamento(s) somando {sellers.length} vendedor(es) — {year}</div>
+              </div>
+            </>
+          );
+        })()
+      )}
+
+      <div style={{ marginTop: 24, fontSize: 9.5, color: "#8a8672" }}>Crediti Soluções Financeiras — documento gerado automaticamente pelo sistema de produção.</div>
+    </div>
+    </>
+  );
+}
+
+function StatCard({ label, value, strong }) {
+  return (
+    <div className="bg-white rounded-xl border border-[#EFE2A8] px-3 py-2.5">
+      <div className="text-[9.5px] font-bold text-[#8A7A1F] uppercase tracking-wide">{label}</div>
+      <div className={`num text-[13px] sm:text-[14px] mt-0.5 truncate ${strong ? "font-extrabold text-[#17160F]" : "font-semibold text-[#4A4636]"}`}>{value}</div>
+    </div>
+  );
+}
+
+function NavBtn({ icon, label, active, onClick }) {
+  return (
+    <button onClick={onClick} className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 ${active ? "text-[#17160F]" : "text-[#B8AF87]"}`}>
+      <span className={`w-9 h-6 rounded-full flex items-center justify-center transition ${active ? "bg-[#FFD447]" : ""}`}>{icon}</span>
+      <span className="text-[10px] font-bold">{label}</span>
+    </button>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="block">
+      <span className="block text-[10.5px] font-bold text-[#8A7A1F] mb-1 uppercase tracking-wide">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function SetupNeeded() {
+  return React.createElement("div", {
+    style: { fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif", minHeight: "100vh", background: "#FFF7DC", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }
+  }, React.createElement("div", {
+    style: { background: "#fff", borderRadius: 16, padding: 28, maxWidth: 480, border: "1px solid #EFE2A8", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }
+  },
+    React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#17160F", marginBottom: 10 } }, "Falta configurar o Firebase"),
+    React.createElement("div", { style: { fontSize: 13.5, color: "#4A4636", lineHeight: 1.6 } },
+      "Abra o arquivo HTML num editor de texto, procure por FIREBASE_CONFIG no topo, e cole ali os dados do seu projeto Firebase (apiKey, projectId, etc). Depois salve e publique de novo no Netlify."
+    )
+  ));
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+if (window.__FIREBASE_NOT_CONFIGURED__) {
+  root.render(React.createElement(SetupNeeded));
+} else {
+  root.render(React.createElement(CreditiProducao));
+}
+</script>
+</body>
+</html>
