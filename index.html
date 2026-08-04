@@ -200,7 +200,7 @@ async function safeList(prefix, shared) { try { return await window.storage.list
 function CreditiProducao() {
   const [year, setYear] = useState(2026);
   const [availableYears, setAvailableYears] = useState(computeBaseYears());
-  const [monthIdx, setMonthIdx] = useState(6);
+  const [monthIdx, setMonthIdx] = useState(() => new Date().getMonth());
   const [sellers, setSellers] = useState(DEFAULT_SELLERS);
   const [activeSellerId, setActiveSellerId] = useState(null);
   const [screen, setScreen] = useState("home"); // 'home' | 'seller' | 'resumo'
@@ -488,14 +488,26 @@ function CreditiProducao() {
             </div>
 
             {/* Office summary strip */}
-            <button onClick={() => setScreen("resumo")} className="w-full text-left bg-[#17160F] rounded-2xl p-4 sm:p-5 mb-6 flex items-center justify-between gap-4 hover:opacity-95 transition">
-              <div>
-                <div className="text-[10.5px] font-bold text-[#FFD447] uppercase tracking-wider mb-1">Produção total do escritório</div>
-                <div className="text-[22px] sm:text-[26px] font-extrabold num text-white">{formatBRL(monthGrandTotal.valorVenda)}</div>
-                <div className="text-[11.5px] text-white/50 mt-0.5">{monthGrandTotal.count} lançamento(s) em {MESES[monthIdx].toLowerCase()}</div>
+            <div className="bg-[#17160F] rounded-2xl p-4 sm:p-5 mb-6">
+              <button onClick={() => setScreen("resumo")} className="w-full text-left flex items-center justify-between gap-4 hover:opacity-90 transition">
+                <div>
+                  <div className="text-[10.5px] font-bold text-[#FFD447] uppercase tracking-wider mb-1">Produção total do escritório</div>
+                  <div className="text-[22px] sm:text-[26px] font-extrabold num text-white">{formatBRL(monthGrandTotal.valorVenda)}</div>
+                  <div className="text-[11.5px] text-white/50 mt-0.5">{monthGrandTotal.count} lançamento(s) em {MESES[monthIdx].toLowerCase()}</div>
+                </div>
+                <div className="w-10 h-10 rounded-full bg-[#FFD447] flex items-center justify-center flex-shrink-0"><TrendingUp size={18} className="text-[#17160F]" /></div>
+              </button>
+              <div className="flex items-center gap-2 mt-4">
+                <button onClick={() => requestPrint("mes")}
+                  className="flex-1 flex items-center justify-center gap-1.5 bg-[#FFD447] text-[#17160F] text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-[#f0c62f] transition">
+                  <Receipt size={14} /> Fechar mês (PDF)
+                </button>
+                <button onClick={() => requestPrint("ano")}
+                  className="flex-1 flex items-center justify-center gap-1.5 bg-white/10 text-white text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-white/20 transition">
+                  <ClipboardList size={14} /> Fechar ano (PDF)
+                </button>
               </div>
-              <div className="w-10 h-10 rounded-full bg-[#FFD447] flex items-center justify-center flex-shrink-0"><TrendingUp size={18} className="text-[#17160F]" /></div>
-            </button>
+            </div>
 
             {/* Seller accounts list */}
             <div className="flex items-center justify-between mb-2 px-1">
@@ -608,11 +620,16 @@ function CreditiProducao() {
               <StatCard label="Com. parceiro" value={formatBRL(activeSellerTotals.comissaoParceiro)} />
             </div>
 
-            <div className="flex items-center justify-between mb-2 px-0.5">
+            <div className="flex items-center justify-between mb-2 px-0.5 gap-2">
               <div className="text-[11px] font-extrabold text-[#8A7A1F] uppercase tracking-wider">Extrato de vendas</div>
-              <button onClick={openNewRecord} className="flex items-center gap-1.5 bg-[#17160F] text-[#FFD447] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#2a2818] transition">
-                <Plus size={14} /> Novo lançamento
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => requestPrint("vendedor")} className="flex items-center gap-1.5 bg-white border border-[#E7DDAE] text-[#17160F] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#FFF1B8] transition">
+                  <Receipt size={14} /> Gerar PDF
+                </button>
+                <button onClick={openNewRecord} className="flex items-center gap-1.5 bg-[#17160F] text-[#FFD447] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#2a2818] transition">
+                  <Plus size={14} /> Novo lançamento
+                </button>
+              </div>
             </div>
 
             <div className="bg-white rounded-2xl border border-[#EFE2A8] overflow-hidden shadow-[0_1px_2px_rgba(120,100,0,0.05)]">
@@ -810,7 +827,59 @@ function CreditiProducao() {
         </div>
       </div>
 
-      {reportType === "mes" ? (
+      {reportType === "vendedor" && activeSeller ? (
+        (() => {
+          const recs = (yearData[monthIdx] && yearData[monthIdx][activeSellerId]) || [];
+          const subtotalComissao = recs.reduce((acc, r) => acc + parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra), 0);
+          const subtotalVenda = recs.reduce((acc, r) => acc + parseNum(r.valorVenda), 0);
+          return (
+            <>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
+                <div style={{ fontSize: 15, fontWeight: 800 }}>Produção de {activeSeller.nome} — {MESES[monthIdx]} / {year}</div>
+                <div style={{ fontSize: 10, color: "#8a8672" }}>Gerado em {new Date().toLocaleDateString("pt-BR")}</div>
+              </div>
+
+              {recs.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#8a8672" }}>Nenhum lançamento neste mês.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1.5px solid #17160F" }}>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Data</th>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Cliente</th>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>CPF</th>
+                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
+                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
+                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Comissão paga ao vendedor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recs.map(r => (
+                      <tr key={r.id} style={{ borderBottom: "1px solid #E7DDAE" }}>
+                        <td style={{ padding: "5px 6px" }}>{fmtDate(r.data) || "—"}</td>
+                        <td style={{ padding: "5px 6px" }}>{r.cliente}</td>
+                        <td style={{ padding: "5px 6px" }}>{r.cpf || "—"}</td>
+                        <td style={{ padding: "5px 6px" }}>{r.produto || "—"}</td>
+                        <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(r.valorVenda)}</td>
+                        <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ borderTop: "2px solid #17160F" }}>
+                      <td colSpan={4} style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>Total</td>
+                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalVenda)}</td>
+                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalComissao)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+
+              <div style={{ marginTop: 24, fontSize: 9.5, color: "#8a8672" }}>Crediti Soluções Financeiras — documento gerado automaticamente pelo sistema de produção.</div>
+            </>
+          );
+        })()
+      ) : reportType === "mes" ? (
         <>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
             <div style={{ fontSize: 15, fontWeight: 800 }}>Relatório de Produção — {MESES[monthIdx]} / {year}</div>
