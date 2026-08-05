@@ -10,6 +10,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
   body { margin: 0; }
 </style>
@@ -216,18 +218,137 @@ function CreditiProducao() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [manageSellers, setManageSellers] = useState(false);
   const [confirmDeleteSeller, setConfirmDeleteSeller] = useState(null);
-  const [reportType, setReportType] = useState("mes");
+  const [pdfError, setPdfError] = useState("");
 
-  function requestPrint(type) {
-    if (ReactDOM.flushSync) {
-      ReactDOM.flushSync(() => setReportType(type));
-    } else {
-      setReportType(type);
-    }
+  function pdfLetterhead(doc) {
+    const pageWidth = doc.internal.pageSize.getWidth();
+    try { doc.addImage(`data:image/png;base64,${LOGO_B64}`, "PNG", 40, 24, 44, 44); } catch (e) {}
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(14);
+    doc.setTextColor(23, 22, 15);
+    doc.text("Crediti Soluções Financeiras", 94, 42);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(90, 87, 68);
+    doc.text("Rua Dom Aureliano Matos, 1741 — Loja A — Centro — Itapajé/CE", 94, 55);
+    doc.setDrawColor(23, 22, 15);
+    doc.setLineWidth(1.2);
+    doc.line(40, 80, pageWidth - 40, 80);
+    return 100;
+  }
+
+  function pdfTitle(doc, text, y) {
+    const pageWidth = doc.internal.pageSize.getWidth();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11.5);
+    doc.setTextColor(23, 22, 15);
+    doc.text(text, 40, y);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(140, 134, 114);
+    doc.text(`Gerado em ${new Date().toLocaleDateString("pt-BR")}`, pageWidth - 40, y, { align: "right" });
+    return y + 14;
+  }
+
+  function pdfSectionLabel(doc, text, y) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(23, 22, 15);
+    doc.text(text, 40, y);
+    return y + 8;
+  }
+
+  function pdfTable(doc, y, head, body, foot) {
+    doc.autoTable({
+      startY: y,
+      head: [head],
+      body: body.length ? body : [head.map((_, i) => (i === 0 ? "Nenhum lançamento" : ""))],
+      foot: foot ? [foot] : undefined,
+      styles: { font: "helvetica", fontSize: 7.5, textColor: [23, 22, 15], cellPadding: 4 },
+      headStyles: { fillColor: [255, 241, 184], textColor: [23, 22, 15], fontStyle: "bold" },
+      footStyles: { fillColor: [247, 245, 236], textColor: [23, 22, 15], fontStyle: "bold" },
+      margin: { left: 40, right: 40 },
+    });
+    return doc.lastAutoTable.finalY + 18;
+  }
+
+  function safeFileBit(s) {
+    return String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  }
+
+  async function generatePDF(type) {
+    setPdfError("");
     try {
-      window.print();
+      if (!window.jspdf || !window.jspdf.jsPDF) {
+        setPdfError("Não foi possível carregar o gerador de PDF. Confira sua internet e tente de novo.");
+        return;
+      }
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: "pt", format: "a4" });
+
+      if (type === "vendedor" && activeSeller) {
+        let y = pdfLetterhead(doc);
+        y = pdfTitle(doc, `Produção de ${activeSeller.nome} — ${MESES[monthIdx]} / ${year}`, y);
+        const recs = (yearData[monthIdx] && yearData[monthIdx][activeSellerId]) || [];
+        const rows = recs.map(r => [fmtDate(r.data) || "—", r.cliente || "", r.cpf || "—", r.produto || "—", formatBRL(r.valorVenda), formatBRL(parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra))]);
+        const totalVenda = recs.reduce((a, r) => a + parseNum(r.valorVenda), 0);
+        const totalCom = recs.reduce((a, r) => a + parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra), 0);
+        pdfTable(doc, y, ["Data", "Cliente", "CPF", "Produto", "Valor liberado", "Comissão paga"], rows, ["", "", "", "Total", formatBRL(totalVenda), formatBRL(totalCom)]);
+        doc.save(`producao-${safeFileBit(activeSeller.nome)}-${safeFileBit(MESES[monthIdx])}-${year}.pdf`);
+      }
+
+      else if (type === "mes") {
+        let y = pdfLetterhead(doc);
+        y = pdfTitle(doc, `Relatório de Produção — ${MESES[monthIdx]} / ${year}`, y);
+        sellers.forEach(s => {
+          const recs = (yearData[monthIdx] && yearData[monthIdx][s.id]) || [];
+          if (recs.length === 0) return;
+          if (y > 700) { doc.addPage(); y = pdfLetterhead(doc); }
+          y = pdfSectionLabel(doc, `${s.nome} — ${recs.length} lançamento(s)`, y);
+          const rows = recs.map(r => [fmtDate(r.data) || "—", r.cliente || "", r.cpf || "—", r.produto || "—", formatBRL(r.valorVenda), formatBRL(parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra))]);
+          const subVenda = recs.reduce((a, r) => a + parseNum(r.valorVenda), 0);
+          const subCom = recs.reduce((a, r) => a + parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra), 0);
+          y = pdfTable(doc, y, ["Data", "Cliente", "CPF", "Produto", "Valor liberado", "Comissão paga"], rows, ["", "", "", "Subtotal", formatBRL(subVenda), formatBRL(subCom)]);
+        });
+        const prod = monthProductSummary();
+        if (prod.length) {
+          if (y > 680) { doc.addPage(); y = pdfLetterhead(doc); }
+          y = pdfSectionLabel(doc, "Valores liberados por produto", y);
+          y = pdfTable(doc, y, ["Produto", "Lançamentos", "Valor liberado"], prod.map(p => [p.produto, String(p.count), formatBRL(p.valorVenda)]));
+        }
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9.5);
+        doc.setTextColor(23, 22, 15);
+        doc.text(`TOTAL GERAL DA COMPETÊNCIA — Valor liberado ${formatBRL(monthGrandTotal.valorVenda)} · Comissão paga ${formatBRL(monthGrandTotal.comissaoParceiro + monthGrandTotal.comissaoExtra)}`, 40, Math.min(y, 780));
+        doc.save(`fechamento-mensal-${safeFileBit(MESES[monthIdx])}-${year}.pdf`);
+      }
+
+      else if (type === "ano") {
+        const ann = annualSummary();
+        let y = pdfLetterhead(doc);
+        y = pdfTitle(doc, `Relatório Anual de Produção — 01/01 a 31/12 de ${year}`, y);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(23, 22, 15);
+        doc.text(`Total emprestado ${formatBRL(ann.totals.valorVenda)} · Recebido ${formatBRL(ann.totals.recebidoValor)} · Pendente ${formatBRL(ann.totals.pendenteValor)} · Comissão paga ${formatBRL(ann.totals.comissao)}`, 40, y);
+        y += 18;
+        y = pdfSectionLabel(doc, "Por vendedor", y);
+        y = pdfTable(doc, y, ["Vendedor", "Lanç.", "Emprestado", "Recebido", "Pendente", "Comissão"],
+          ann.perSeller.map(p => [p.seller.nome, String(p.count), formatBRL(p.valorVenda), formatBRL(p.recebidoValor), formatBRL(p.pendenteValor), formatBRL(p.comissao)]),
+          ["TOTAL", String(ann.totals.count), formatBRL(ann.totals.valorVenda), formatBRL(ann.totals.recebidoValor), formatBRL(ann.totals.pendenteValor), formatBRL(ann.totals.comissao)]);
+        const prod = annualProductSummary();
+        if (prod.length) {
+          if (y > 650) { doc.addPage(); y = pdfLetterhead(doc); }
+          y = pdfSectionLabel(doc, "Valores liberados por produto no ano", y);
+          y = pdfTable(doc, y, ["Produto", "Lançamentos", "Valor liberado"], prod.map(p => [p.produto, String(p.count), formatBRL(p.valorVenda)]));
+        }
+        if (y > 600) { doc.addPage(); y = pdfLetterhead(doc); }
+        y = pdfSectionLabel(doc, "Por mês", y);
+        y = pdfTable(doc, y, ["Mês", "Lançamentos", "Valor liberado"], ann.perMonth.map(m => [m.nome, String(m.count), formatBRL(m.valorVenda)]));
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(23, 22, 15);
+        doc.text(`FECHAMENTO ${year} — TODOS OS VENDEDORES: Total liberado ${formatBRL(ann.totals.valorVenda)} · Comissão paga ${formatBRL(ann.totals.comissao)}`, 40, Math.min(y, 780));
+        doc.save(`fechamento-anual-${year}.pdf`);
+      }
     } catch (e) {
-      alert("Não foi possível abrir a impressão. Tente novamente.");
+      setPdfError("Não foi possível gerar o PDF. Tente novamente.");
     }
   }
 
@@ -418,7 +539,6 @@ function CreditiProducao() {
   function goToSeller(id) { setActiveSellerId(id); setScreen("seller"); }
 
   return (
-    <>
     <div style={{ fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" }} className="app-shell min-h-screen bg-[#FFF7DC] text-[#17160F] pb-20 sm:pb-8">
       <style>{`
         .num{font-variant-numeric:tabular-nums}
@@ -427,11 +547,6 @@ function CreditiProducao() {
         .input{width:100%;border:1.5px solid #E7DDAE;border-radius:10px;padding:9px 11px;font-size:13.5px;font-family:inherit;outline:none;transition:.15s;background:#fff;color:#17160F}
         .input:focus{border-color:#D9A400;box-shadow:0 0 0 3px rgba(217,164,0,.18)}
         .input::placeholder{color:#B8AF87}
-        .print-report{display:none}
-        @media print{
-          .app-shell{display:none !important}
-          .print-report{display:block !important}
-        }
       `}</style>
 
       {/* ===== Top bar ===== */}
@@ -463,6 +578,13 @@ function CreditiProducao() {
           <AlertCircle size={15} className="flex-shrink-0" />
           <span className="flex-1">{error}</span>
           <button onClick={() => setError("")} className="text-[#A3271E]/60 hover:text-[#A3271E]"><X size={14} /></button>
+        </div>
+      )}
+      {pdfError && (
+        <div className="bg-[#FBE4E1] text-[#A3271E] text-[13px] px-4 sm:px-6 py-2.5 flex items-center gap-2 border-b border-[#f0c4bf]">
+          <AlertCircle size={15} className="flex-shrink-0" />
+          <span className="flex-1">{pdfError}</span>
+          <button onClick={() => setPdfError("")} className="text-[#A3271E]/60 hover:text-[#A3271E]"><X size={14} /></button>
         </div>
       )}
 
@@ -499,11 +621,11 @@ function CreditiProducao() {
                 <div className="w-10 h-10 rounded-full bg-[#FFD447] flex items-center justify-center flex-shrink-0"><TrendingUp size={18} className="text-[#17160F]" /></div>
               </button>
               <div className="flex items-center gap-2 mt-4">
-                <button onClick={() => requestPrint("mes")}
+                <button onClick={() => generatePDF("mes")}
                   className="flex-1 flex items-center justify-center gap-1.5 bg-[#FFD447] text-[#17160F] text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-[#f0c62f] transition">
                   <Receipt size={14} /> Fechar mês (PDF)
                 </button>
-                <button onClick={() => requestPrint("ano")}
+                <button onClick={() => generatePDF("ano")}
                   className="flex-1 flex items-center justify-center gap-1.5 bg-white/10 text-white text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-white/20 transition">
                   <ClipboardList size={14} /> Fechar ano (PDF)
                 </button>
@@ -624,7 +746,7 @@ function CreditiProducao() {
             <div className="flex items-center justify-between mb-2 px-0.5 gap-2">
               <div className="text-[11px] font-extrabold text-[#8A7A1F] uppercase tracking-wider">Extrato de vendas</div>
               <div className="flex items-center gap-2">
-                <button onClick={() => requestPrint("vendedor")} className="flex items-center gap-1.5 bg-white border border-[#E7DDAE] text-[#17160F] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#FFF1B8] transition">
+                <button onClick={() => generatePDF("vendedor")} className="flex items-center gap-1.5 bg-white border border-[#E7DDAE] text-[#17160F] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#FFF1B8] transition">
                   <Receipt size={14} /> Gerar PDF
                 </button>
                 <button onClick={openNewRecord} className="flex items-center gap-1.5 bg-[#17160F] text-[#FFD447] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#2a2818] transition">
@@ -696,11 +818,11 @@ function CreditiProducao() {
               <div className="text-[12.5px] text-[#7A7154] mt-0.5">{MESES[monthIdx]} · {year}</div>
             </div>
             <div className="flex items-center gap-2 mb-3">
-              <button onClick={() => requestPrint("mes")}
+              <button onClick={() => generatePDF("mes")}
                 className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 bg-[#17160F] text-[#FFD447] text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-[#2a2818] transition">
                 <Receipt size={14} /> Fechar mês (PDF)
               </button>
-              <button onClick={() => requestPrint("ano")}
+              <button onClick={() => generatePDF("ano")}
                 className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 bg-white border border-[#E7DDAE] text-[#17160F] text-[12px] font-bold px-3 py-2.5 rounded-lg hover:bg-[#FFF1B8] transition">
                 <ClipboardList size={14} /> Fechar ano (PDF)
               </button>
@@ -817,267 +939,6 @@ function CreditiProducao() {
 
       <footer className="hidden sm:block text-center text-[11px] text-[#B8AF87] pt-8 pb-4">Crediti Soluções Financeiras · dados salvos automaticamente na nuvem</footer>
     </div>
-
-    {/* ===== Printable letterhead report (visible only when printing / saving as PDF) ===== */}
-    <div className="print-report" style={{ fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif", color: "#17160F", padding: "28px 34px", background: "#fff" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 16, borderBottom: "3px solid #17160F", paddingBottom: 16, marginBottom: 18 }}>
-        <img src={`data:image/png;base64,${LOGO_B64}`} alt="Crediti" style={{ width: 62, height: 62, borderRadius: "50%", flexShrink: 0 }} />
-        <div>
-          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>Crediti Soluções Financeiras</div>
-          <div style={{ fontSize: 11, color: "#5b5744", marginTop: 2 }}>Rua Dom Aureliano Matos, 1741 — Loja A — Centro — Itapajé/CE</div>
-        </div>
-      </div>
-
-      {reportType === "vendedor" && activeSeller ? (
-        (() => {
-          const recs = (yearData[monthIdx] && yearData[monthIdx][activeSellerId]) || [];
-          const subtotalComissao = recs.reduce((acc, r) => acc + parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra), 0);
-          const subtotalVenda = recs.reduce((acc, r) => acc + parseNum(r.valorVenda), 0);
-          return (
-            <>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
-                <div style={{ fontSize: 15, fontWeight: 800 }}>Produção de {activeSeller.nome} — {MESES[monthIdx]} / {year}</div>
-                <div style={{ fontSize: 10, color: "#8a8672" }}>Gerado em {new Date().toLocaleDateString("pt-BR")}</div>
-              </div>
-
-              {recs.length === 0 ? (
-                <div style={{ fontSize: 12, color: "#8a8672" }}>Nenhum lançamento neste mês.</div>
-              ) : (
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1.5px solid #17160F" }}>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Data</th>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Cliente</th>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>CPF</th>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
-                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
-                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Comissão paga ao vendedor</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recs.map(r => (
-                      <tr key={r.id} style={{ borderBottom: "1px solid #E7DDAE" }}>
-                        <td style={{ padding: "5px 6px" }}>{fmtDate(r.data) || "—"}</td>
-                        <td style={{ padding: "5px 6px" }}>{r.cliente}</td>
-                        <td style={{ padding: "5px 6px" }}>{r.cpf || "—"}</td>
-                        <td style={{ padding: "5px 6px" }}>{r.produto || "—"}</td>
-                        <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(r.valorVenda)}</td>
-                        <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ borderTop: "2px solid #17160F" }}>
-                      <td colSpan={4} style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>Total</td>
-                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalVenda)}</td>
-                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalComissao)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              )}
-
-              <div style={{ marginTop: 24, fontSize: 9.5, color: "#8a8672" }}>Crediti Soluções Financeiras — documento gerado automaticamente pelo sistema de produção.</div>
-            </>
-          );
-        })()
-      ) : reportType === "mes" ? (
-        <>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
-            <div style={{ fontSize: 15, fontWeight: 800 }}>Relatório de Produção — {MESES[monthIdx]} / {year}</div>
-            <div style={{ fontSize: 10, color: "#8a8672" }}>Gerado em {new Date().toLocaleDateString("pt-BR")}</div>
-          </div>
-
-          {sellers.map(s => {
-            const recs = (yearData[monthIdx] && yearData[monthIdx][s.id]) || [];
-            if (recs.length === 0) return null;
-            const subtotalComissao = recs.reduce((acc, r) => acc + parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra), 0);
-            const subtotalVenda = recs.reduce((acc, r) => acc + parseNum(r.valorVenda), 0);
-            return (
-              <div key={s.id} style={{ marginBottom: 22, breakInside: "avoid" }}>
-                <div style={{ fontSize: 13, fontWeight: 800, background: "#FFF1B8", padding: "6px 10px", borderRadius: 6, marginBottom: 6 }}>
-                  {s.nome} — {recs.length} lançamento(s)
-                </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1.5px solid #17160F" }}>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Data</th>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Cliente</th>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>CPF</th>
-                      <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
-                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
-                      <th style={{ textAlign: "right", padding: "5px 6px" }}>Comissão paga ao vendedor</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recs.map(r => (
-                      <tr key={r.id} style={{ borderBottom: "1px solid #E7DDAE" }}>
-                        <td style={{ padding: "5px 6px" }}>{fmtDate(r.data) || "—"}</td>
-                        <td style={{ padding: "5px 6px" }}>{r.cliente}</td>
-                        <td style={{ padding: "5px 6px" }}>{r.cpf || "—"}</td>
-                        <td style={{ padding: "5px 6px" }}>{r.produto || "—"}</td>
-                        <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(r.valorVenda)}</td>
-                        <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(parseNum(r.comissaoParceiro) + parseNum(r.comissaoExtra))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ borderTop: "2px solid #17160F" }}>
-                      <td colSpan={4} style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>Subtotal {s.nome}</td>
-                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalVenda)}</td>
-                      <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(subtotalComissao)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            );
-          })}
-
-          <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, marginTop: 4, breakInside: "avoid" }}>Valores liberados por produto</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 16, breakInside: "avoid" }}>
-            <thead>
-              <tr style={{ borderBottom: "1.5px solid #17160F" }}>
-                <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
-                <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
-                <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {monthProductSummary().map(p => (
-                <tr key={p.produto} style={{ borderBottom: "1px solid #E7DDAE" }}>
-                  <td style={{ padding: "5px 6px" }}>{p.produto}</td>
-                  <td style={{ padding: "5px 6px", textAlign: "right" }}>{p.count}</td>
-                  <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(p.valorVenda)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <div style={{ marginTop: 10, padding: "12px 14px", background: "#17160F", color: "#fff", borderRadius: 8, display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800 }}>
-            <span>TOTAL GERAL DA COMPETÊNCIA</span>
-            <span>Valor liberado {formatBRL(monthGrandTotal.valorVenda)} · Comissão paga aos vendedores {formatBRL(monthGrandTotal.comissaoParceiro + monthGrandTotal.comissaoExtra)}</span>
-          </div>
-        </>
-      ) : (
-        (() => {
-          const ann = annualSummary();
-          return (
-            <>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
-                <div style={{ fontSize: 15, fontWeight: 800 }}>Relatório Anual de Produção — 01/01 a 31/12 de {year}</div>
-                <div style={{ fontSize: 10, color: "#8a8672" }}>Gerado em {new Date().toLocaleDateString("pt-BR")}</div>
-              </div>
-
-              <div style={{ marginBottom: 20, padding: "14px 16px", background: "#17160F", color: "#fff", borderRadius: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: "#FFD447", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Total do ano — {year}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Total emprestado</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.valorVenda)}</div></div>
-                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Recebido pelo cliente</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.recebidoValor)}</div></div>
-                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Pendente</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.pendenteValor)}</div></div>
-                  <div><div style={{ fontSize: 9.5, color: "#ffffff88" }}>Comissões pagas</div><div style={{ fontSize: 14, fontWeight: 800 }}>{formatBRL(ann.totals.comissao)}</div></div>
-                </div>
-                <div style={{ fontSize: 10, color: "#ffffff88", marginTop: 8 }}>{ann.totals.count} lançamento(s) no ano</div>
-              </div>
-
-              <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6 }}>Por vendedor</div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 22 }}>
-                <thead>
-                  <tr style={{ borderBottom: "1.5px solid #17160F" }}>
-                    <th style={{ textAlign: "left", padding: "5px 6px" }}>Vendedor</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Total emprestado</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Recebido</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Pendente</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Comissão paga ao vendedor</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ann.perSeller.map(p => (
-                    <tr key={p.seller.id} style={{ borderBottom: "1px solid #E7DDAE" }}>
-                      <td style={{ padding: "5px 6px", fontWeight: 700 }}>{p.seller.nome}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{p.count}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(p.valorVenda)}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(p.recebidoValor)}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(p.pendenteValor)}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(p.comissao)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr style={{ borderTop: "2px solid #17160F" }}>
-                    <td style={{ padding: "6px", fontWeight: 800 }}>TOTAL</td>
-                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{ann.totals.count}</td>
-                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.valorVenda)}</td>
-                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.recebidoValor)}</td>
-                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.pendenteValor)}</td>
-                    <td style={{ padding: "6px", textAlign: "right", fontWeight: 800 }}>{formatBRL(ann.totals.comissao)}</td>
-                  </tr>
-                </tfoot>
-              </table>
-
-              <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, breakInside: "avoid" }}>Valores liberados por produto no ano</div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 22, breakInside: "avoid" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1.5px solid #17160F" }}>
-                    <th style={{ textAlign: "left", padding: "5px 6px" }}>Produto</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {annualProductSummary().map(p => (
-                    <tr key={p.produto} style={{ borderBottom: "1px solid #E7DDAE" }}>
-                      <td style={{ padding: "5px 6px" }}>{p.produto}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{p.count}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700 }}>{formatBRL(p.valorVenda)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, breakInside: "avoid" }}>Por mês</div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, breakInside: "avoid" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1.5px solid #17160F" }}>
-                    <th style={{ textAlign: "left", padding: "5px 6px" }}>Mês</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Lançamentos</th>
-                    <th style={{ textAlign: "right", padding: "5px 6px" }}>Valor liberado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ann.perMonth.map(m => (
-                    <tr key={m.idx} style={{ borderBottom: "1px solid #E7DDAE" }}>
-                      <td style={{ padding: "5px 6px" }}>{m.nome}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{m.count}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "right" }}>{formatBRL(m.valorVenda)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <div style={{ marginTop: 18, padding: "14px 16px", background: "#17160F", color: "#fff", borderRadius: 8, breakInside: "avoid" }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: "#FFD447", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
-                  Fechamento {year} — Total geral (todos os vendedores)
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                  <div>
-                    <div style={{ fontSize: 9.5, color: "#ffffff88" }}>Total liberado para clientes no ano</div>
-                    <div style={{ fontSize: 17, fontWeight: 800 }}>{formatBRL(ann.totals.valorVenda)}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 9.5, color: "#ffffff88" }}>Total de comissão paga aos vendedores no ano</div>
-                    <div style={{ fontSize: 17, fontWeight: 800 }}>{formatBRL(ann.totals.comissao)}</div>
-                  </div>
-                </div>
-                <div style={{ fontSize: 10, color: "#ffffff88", marginTop: 8 }}>{ann.totals.count} lançamento(s) somando {sellers.length} vendedor(es) — {year}</div>
-              </div>
-            </>
-          );
-        })()
-      )}
-
-      <div style={{ marginTop: 24, fontSize: 9.5, color: "#8a8672" }}>Crediti Soluções Financeiras — documento gerado automaticamente pelo sistema de produção.</div>
-    </div>
-    </>
   );
 }
 
