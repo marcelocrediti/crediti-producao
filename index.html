@@ -217,18 +217,15 @@ function CreditiProducao() {
   const [manageSellers, setManageSellers] = useState(false);
   const [confirmDeleteSeller, setConfirmDeleteSeller] = useState(null);
   const [reportType, setReportType] = useState("mes");
-  const [printTrigger, setPrintTrigger] = useState(0);
 
   function requestPrint(type) {
-    setReportType(type);
-    setPrintTrigger(t => t + 1);
+    if (ReactDOM.flushSync) {
+      ReactDOM.flushSync(() => setReportType(type));
+    } else {
+      setReportType(type);
+    }
+    window.print();
   }
-
-  useEffect(() => {
-    if (printTrigger === 0) return;
-    const id = requestAnimationFrame(() => window.print());
-    return () => cancelAnimationFrame(id);
-  }, [printTrigger]);
 
   useEffect(() => {
     let cancelled = false;
