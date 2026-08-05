@@ -224,7 +224,11 @@ function CreditiProducao() {
     } else {
       setReportType(type);
     }
-    window.print();
+    try {
+      window.print();
+    } catch (e) {
+      alert("Não foi possível abrir a impressão. Tente novamente.");
+    }
   }
 
   useEffect(() => {
