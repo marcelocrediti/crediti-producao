@@ -352,20 +352,20 @@ function CreditiProducao() {
     }
   }
 
+  const writeLock = React.useRef(false);
+  const [dataReady, setDataReady] = useState(false);
+  const [sellersReady, setSellersReady] = useState(false);
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const res = await safeGet("crediti-sellers", true);
-      if (cancelled) return;
-      if (res && res.value) {
+    if (!db) { setError("Banco de dados indisponível."); return; }
+    return db.collection("crediti_storage").doc(docId("crediti-sellers", true))
+      .onSnapshot(snap => {
         try {
-          const parsed = JSON.parse(res.value);
-          if (Array.isArray(parsed) && parsed.length > 0) { setSellers(parsed); return; }
-        } catch (e) {}
-      }
-      await safeSet("crediti-sellers", JSON.stringify(DEFAULT_SELLERS), true);
-    })();
-    return () => { cancelled = true; };
+          const parsed = snap.exists ? JSON.parse(snap.data().value) : DEFAULT_SELLERS;
+          if (!Array.isArray(parsed)) throw new Error("invalid");
+          setSellers(parsed); setSellersReady(true);
+        } catch (e) { setSellersReady(false); setError("Não foi possível ler os vendedores. Nenhum dado foi substituído."); }
+      }, () => { setSellersReady(false); setError("Falha ao carregar vendedores. Confira a conexão e recarregue."); });
   }, []);
 
   useEffect(() => {
@@ -374,39 +374,46 @@ function CreditiProducao() {
       const res = await safeList("crediti-records-", true);
       if (cancelled || !res || !res.keys) return;
       const yrs = res.keys.map(k => parseInt(k.replace("crediti-records-", ""), 10)).filter(n => !isNaN(n));
-      const all = Array.from(new Set([...computeBaseYears(), ...yrs])).sort((a, b) => a - b);
-      setAvailableYears(all);
+      setAvailableYears(Array.from(new Set([...computeBaseYears(), ...yrs])).sort((a, b) => a - b));
     })();
     return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    (async () => {
-      const res = await safeGet(`crediti-records-${year}`, true);
-      if (cancelled) return;
-      if (res && res.value) {
-        try { setYearData(JSON.parse(res.value)); } catch (e) { setYearData({}); }
-      } else { setYearData({}); }
-      setLoading(false);
-    })();
-    return () => { cancelled = true; };
+    setLoading(true); setDataReady(false); setYearData({});
+    if (!db) { setLoading(false); setError("Banco de dados indisponível."); return; }
+    return db.collection("crediti_storage").doc(docId(`crediti-records-${year}`, true))
+      .onSnapshot({ includeMetadataChanges: true }, snap => {
+        try {
+          const parsed = snap.exists ? JSON.parse(snap.data().value) : {};
+          if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("invalid");
+          setYearData(parsed); setDataReady(!snap.metadata.fromCache); setLoading(false);
+        } catch (e) { setDataReady(false); setLoading(false); setError("Dados inválidos. Gravação bloqueada para preservar as produções."); }
+      }, () => { setDataReady(false); setLoading(false); setError("Não foi possível carregar as produções. Gravação bloqueada. Confira a conexão e recarregue."); });
   }, [year]);
 
-  const persistYearData = useCallback(async (updated) => {
-    setSaving(true);
-    const result = await safeSet(`crediti-records-${year}`, JSON.stringify(updated), true);
-    if (!result) setError("Não deu para salvar agora. Confira sua internet e tente de novo.");
-    setSaving(false);
-  }, [year]);
-
-  const persistSellers = useCallback(async (updated) => {
-    setSaving(true);
-    const result = await safeSet("crediti-sellers", JSON.stringify(updated), true);
-    if (!result) setError("Não deu para salvar o vendedor. Tente de novo.");
-    setSaving(false);
-  }, []);
+  async function mutateStored(key, fallback, change) {
+    if (writeLock.current) return false;
+    writeLock.current = true; setSaving(true); setError("");
+    try {
+      const ref = db.collection("crediti_storage").doc(docId(key, true));
+      await db.runTransaction(async tx => {
+        const snap = await tx.get(ref);
+        const current = snap.exists ? JSON.parse(snap.data().value) : fallback;
+        const updated = change(current);
+        tx.set(ref, {
+          value: JSON.stringify(updated),
+          previousValue: snap.exists ? snap.data().value : JSON.stringify(fallback),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          storageVersion: 2
+        }, { merge: true });
+      });
+      return true;
+    } catch (e) {
+      setError(e.message && e.message.startsWith("Atenção:") ? e.message : "Não foi salvo. Seus dados continuam no formulário. Confira a internet e tente novamente.");
+      return false;
+    } finally { writeLock.current = false; setSaving(false); }
+  }
 
   function sellerTotalsForMonth(sellerId, mIdx) {
     const recs = (yearData[mIdx] && yearData[mIdx][sellerId]) || [];
@@ -490,44 +497,61 @@ function CreditiProducao() {
   function openEditRecord(rec) { setEditingRecord(rec.id); setForm({ ...rec }); setModalOpen(true); }
 
   async function saveRecord() {
+    if (!dataReady || loading || !sellersReady) { setError("Aguarde o carregamento completo dos dados antes de salvar."); return; }
     if (!form.cliente.trim()) { setError("Informe o nome do cliente."); return; }
-    const updated = JSON.parse(JSON.stringify(yearData));
-    if (!updated[monthIdx]) updated[monthIdx] = {};
-    if (!updated[monthIdx][activeSellerId]) updated[monthIdx][activeSellerId] = [];
-    if (editingRecord) {
-      updated[monthIdx][activeSellerId] = updated[monthIdx][activeSellerId].map(r => r.id === editingRecord ? { ...form, id: editingRecord } : r);
-    } else {
-      updated[monthIdx][activeSellerId].push({ ...form, id: uid() });
-    }
-    setYearData(updated); setModalOpen(false); setError("");
-    await persistYearData(updated);
+    const record = { ...form, id: editingRecord || uid() };
+    const original = monthRecords.find(r => r.id === editingRecord);
+    const ok = await mutateStored(`crediti-records-${year}`, {}, current => {
+      if (!current || Array.isArray(current) || typeof current !== "object") throw new Error("invalid");
+      const updated = JSON.parse(JSON.stringify(current));
+      if (!updated[monthIdx]) updated[monthIdx] = {};
+      const records = updated[monthIdx][activeSellerId] || [];
+      const existing = records.find(r => r.id === record.id);
+      if (editingRecord && (!existing || JSON.stringify(existing) !== JSON.stringify(original))) {
+        throw new Error("Atenção: esta produção foi alterada em outro aparelho. Feche e abra a edição novamente.");
+      }
+      updated[monthIdx][activeSellerId] = editingRecord
+        ? records.map(r => r.id === record.id ? record : r)
+        : [...records, record];
+      return updated;
+    });
+    if (ok) { setModalOpen(false); setEditingRecord(null); }
   }
 
   async function deleteRecord(id) {
-    const updated = JSON.parse(JSON.stringify(yearData));
-    if (updated[monthIdx] && updated[monthIdx][activeSellerId]) {
-      updated[monthIdx][activeSellerId] = updated[monthIdx][activeSellerId].filter(r => r.id !== id);
-    }
-    setYearData(updated); setConfirmDelete(null);
-    await persistYearData(updated);
+    if (!dataReady || loading) { setError("Aguarde o carregamento dos dados."); return; }
+    const original = monthRecords.find(r => r.id === id);
+    const ok = await mutateStored(`crediti-records-${year}`, {}, current => {
+      const updated = JSON.parse(JSON.stringify(current));
+      const records = (updated[monthIdx] && updated[monthIdx][activeSellerId]) || [];
+      const existing = records.find(r => r.id === id);
+      if (!existing || JSON.stringify(existing) !== JSON.stringify(original)) {
+        throw new Error("Atenção: esta produção foi alterada. Confira os dados antes de excluir.");
+      }
+      // Preserve deleted records in the same document for recovery.
+      if (!updated._archive) updated._archive = {};
+      updated._archive[id] = { record: existing, month: monthIdx, sellerId: activeSellerId, deletedAt: new Date().toISOString() };
+      updated[monthIdx][activeSellerId] = records.filter(r => r.id !== id);
+      return updated;
+    });
+    if (ok) setConfirmDelete(null);
   }
 
   async function addSeller() {
     const name = newSellerName.trim();
-    if (!name) return;
+    if (!name || !sellersReady) return;
     const id = name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || uid();
-    if (sellers.some(s => s.id === id)) { setError("Já existe um vendedor com esse nome."); return; }
-    const updated = [...sellers, { id, nome: name }];
-    setSellers(updated); setNewSellerName(""); setAddingSeller(false);
-    await persistSellers(updated);
+    const ok = await mutateStored("crediti-sellers", DEFAULT_SELLERS, current => {
+      if (!Array.isArray(current)) throw new Error("invalid");
+      if (current.some(s => s.id === id)) throw new Error("Atenção: já existe um vendedor com esse nome.");
+      return [...current, { id, nome: name }];
+    });
+    if (ok) { setNewSellerName(""); setAddingSeller(false); }
   }
 
   async function removeSeller(id) {
-    if (sellers.length <= 1) return;
-    const updated = sellers.filter(s => s.id !== id);
-    setSellers(updated);
-    if (activeSellerId === id) { setActiveSellerId(null); setScreen("home"); }
-    await persistSellers(updated);
+    setConfirmDeleteSeller(null);
+    setError("Para preservar o caixa e o histórico, a exclusão de vendedores está bloqueada. As produções permanecem vinculadas ao vendedor.");
   }
 
   function addYear() {
@@ -789,7 +813,7 @@ function CreditiProducao() {
                           <button onClick={() => openEditRecord(r)} className="w-7 h-7 rounded-md hover:bg-[#F5EDCB] flex items-center justify-center text-[#7A7154]"><Pencil size={15} /></button>
                           {confirmDelete === r.id ? (
                             <>
-                              <button onClick={() => deleteRecord(r.id)} className="text-[11px] font-bold text-[#A3271E] px-1">confirmar</button>
+                              <button disabled={saving || !dataReady} onClick={() => deleteRecord(r.id)} className="text-[11px] font-bold text-[#A3271E] px-1">confirmar</button>
                               <button onClick={() => setConfirmDelete(null)} className="text-[11px] text-[#8A8672] px-1">cancelar</button>
                             </>
                           ) : (
@@ -931,7 +955,7 @@ function CreditiProducao() {
             </div>
             <div className="px-5 py-4 border-t border-[#F0EAC8] flex items-center gap-2 justify-end sticky bottom-0 bg-white">
               <button onClick={() => setModalOpen(false)} className="px-4 py-2 rounded-lg text-[13px] font-bold text-[#7A7154] hover:bg-[#F5EDCB] transition">Cancelar</button>
-              <button onClick={saveRecord} className="px-4 py-2 rounded-lg text-[13px] font-bold bg-[#FFD447] text-[#17160F] hover:bg-[#f0c62f] transition flex items-center gap-1.5"><Save size={14} /> Salvar</button>
+              <button disabled={saving || loading || !dataReady || !sellersReady} onClick={saveRecord} className="px-4 py-2 rounded-lg text-[13px] font-bold bg-[#FFD447] text-[#17160F] hover:bg-[#f0c62f] transition flex items-center gap-1.5"><Save size={14} /> Salvar</button>
             </div>
           </div>
         </div>
