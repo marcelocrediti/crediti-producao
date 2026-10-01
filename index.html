@@ -201,7 +201,8 @@ async function safeList(prefix, shared) { try { return await window.storage.list
 
 // Records remain visible even when a registry entry is missing.
 function visibleSellers(registry, data) {
-  const result = registry.map(s => ({ ...s }));
+  const result = DEFAULT_SELLERS.map(fixed => ({ ...fixed, ...(registry.find(s => s.id === fixed.id) || {}) }));
+  registry.forEach(s => { if (!result.some(item => item.id === s.id)) result.push({ ...s }); });
   const known = new Set(result.map(s => s.id));
   Object.entries(data).forEach(([month, groups]) => {
     if (!/^(?:[0-9]|1[01])$/.test(month) || !groups || typeof groups !== "object") return;
@@ -212,6 +213,13 @@ function visibleSellers(registry, data) {
     });
   });
   return result;
+}
+
+function sellersForMonth(sellers, data, year, month) {
+  const period = `${year}-${month}`;
+  return sellers.filter(s => DEFAULT_SELLERS.some(f => f.id === s.id)
+    || ((data[month] && data[month][s.id]) || []).length > 0
+    || (s.activePeriods || []).includes(period));
 }
 
 function CreditiProducao() {
@@ -239,6 +247,7 @@ function CreditiProducao() {
   const [backupLoading, setBackupLoading] = useState(false);
   const [saveNotice, setSaveNotice] = useState("");
   const sellers = useMemo(() => visibleSellers(sellerRegistry, yearData), [sellerRegistry, yearData]);
+  const monthSellers = useMemo(() => sellersForMonth(sellers, yearData, year, monthIdx), [sellers, yearData, year, monthIdx]);
 
 
   function pdfLetterhead(doc) {
@@ -457,7 +466,7 @@ function CreditiProducao() {
   }
 
   const monthRecords = useMemo(() => (activeSellerId && yearData[monthIdx] && yearData[monthIdx][activeSellerId]) || [], [yearData, monthIdx, activeSellerId]);
-  const monthSummary = useMemo(() => sellers.map(s => ({ seller: s, totals: sellerTotalsForMonth(s.id, monthIdx) })), [sellers, yearData, monthIdx]);
+  const monthSummary = useMemo(() => monthSellers.map(s => ({ seller: s, totals: sellerTotalsForMonth(s.id, monthIdx) })), [monthSellers, yearData, monthIdx]);
   const monthGrandTotal = useMemo(() => monthSummary.reduce((acc, s) => {
     acc.valorVenda += s.totals.valorVenda; acc.comissaoParceiro += s.totals.comissaoParceiro;
     acc.comissaoExtra += s.totals.comissaoExtra; acc.count += s.totals.count;
@@ -517,7 +526,7 @@ function CreditiProducao() {
         });
       });
     }
-    return { perSeller, perMonth, totals };
+    return { perSeller: perSeller.filter(p => p.count > 0 || DEFAULT_SELLERS.some(f => f.id === p.seller.id)), perMonth, totals };
   }
 
   const activeSeller = sellers.find(s => s.id === activeSellerId);
@@ -573,8 +582,9 @@ function CreditiProducao() {
     const id = name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || uid();
     const ok = await mutateStored("crediti-sellers", DEFAULT_SELLERS, current => {
       if (!Array.isArray(current)) throw new Error("invalid");
-      if (current.some(s => s.id === id)) throw new Error("Atenção: já existe um vendedor com esse nome.");
-      return [...current, { id, nome: name }];
+      const period = `${year}-${monthIdx}`;
+      if (current.some(s => s.id === id)) return current.map(s => s.id === id ? { ...s, activePeriods: Array.from(new Set([...(s.activePeriods || []), period])) } : s);
+      return [...current, { id, nome: name, activePeriods: [period] }];
     });
     if (ok) { setNewSellerName(""); setAddingSeller(false); }
   }
@@ -710,7 +720,7 @@ function CreditiProducao() {
         {screen === "home" && (
           <>
             <div className="mb-1 text-[20px] sm:text-[23px] font-extrabold text-[#17160F] tracking-tight">Produção de {MESES[monthIdx]}</div>
-            <div className="mb-5 text-[13px] text-[#7A7154]">Escolha o vendedor para lançar ou conferir os dados de {year}.</div>
+            <div className="mb-5 text-[13px] text-[#7A7154]">Samila, Luana e Luís são fixos. Adicione os parceiros quando produzirem em {MESES[monthIdx].toLowerCase()}.</div>
 
             {/* Month picker */}
             <div className="flex items-center gap-2 mb-6">
@@ -760,7 +770,7 @@ function CreditiProducao() {
             </div>
 
             <div className="bg-white rounded-2xl border border-[#EFE2A8] overflow-hidden divide-y divide-[#F5EDCB] shadow-[0_1px_2px_rgba(120,100,0,0.05)]">
-              {sellers.map(s => {
+              {monthSellers.map(s => {
                 const t = sellerTotalsForMonth(s.id, monthIdx);
 
                 if (manageSellers) {
@@ -798,14 +808,15 @@ function CreditiProducao() {
                     <div className="flex items-center gap-1.5">
                       <input autoFocus value={newSellerName} onChange={e => setNewSellerName(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter") addSeller(); if (e.key === "Escape") setAddingSeller(false); }}
-                        placeholder="Nome do vendedor" className="input flex-1" />
-                      <button onClick={addSeller} className="w-9 h-9 rounded-lg bg-[#17160F] text-[#FFD447] flex items-center justify-center flex-shrink-0"><Save size={14} /></button>
+                        placeholder="Nome do parceiro" list="crediti-partners" className="input flex-1" />
+                      <datalist id="crediti-partners">{sellers.filter(s => !DEFAULT_SELLERS.some(f => f.id === s.id)).map(s => <option key={s.id} value={s.nome} />)}</datalist>
+                      <button disabled={saving} onClick={addSeller} className="w-9 h-9 rounded-lg bg-[#17160F] text-[#FFD447] flex items-center justify-center flex-shrink-0"><Save size={14} /></button>
                       <button onClick={() => { setAddingSeller(false); setNewSellerName(""); }} className="w-9 h-9 rounded-lg bg-[#F5EDCB] flex items-center justify-center flex-shrink-0"><X size={14} /></button>
                     </div>
                   ) : (
                     <button onClick={() => setAddingSeller(true)} className="w-full flex items-center gap-2 text-[13px] font-bold text-[#8A7A1F] hover:text-[#17160F] transition py-1">
                       <span className="w-10 h-10 rounded-full border-2 border-dashed border-[#E7DDAE] flex items-center justify-center flex-shrink-0"><Plus size={15} /></span>
-                      Adicionar vendedor
+                      Adicionar parceiro neste mês
                     </button>
                   )}
                 </div>
