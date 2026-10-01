@@ -199,11 +199,26 @@ async function safeGet(key, shared) { try { return await window.storage.get(key,
 async function safeSet(key, value, shared) { try { return await window.storage.set(key, value, shared); } catch (e) { return null; } }
 async function safeList(prefix, shared) { try { return await window.storage.list(prefix, shared); } catch (e) { return null; } }
 
+// Records remain visible even when a registry entry is missing.
+function visibleSellers(registry, data) {
+  const result = registry.map(s => ({ ...s }));
+  const known = new Set(result.map(s => s.id));
+  Object.entries(data).forEach(([month, groups]) => {
+    if (!/^(?:[0-9]|1[01])$/.test(month) || !groups || typeof groups !== "object") return;
+    Object.entries(groups).forEach(([id, records]) => {
+      if (!Array.isArray(records) || !records.length || known.has(id)) return;
+      result.push({ id, nome: id.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") });
+      known.add(id);
+    });
+  });
+  return result;
+}
+
 function CreditiProducao() {
   const [year, setYear] = useState(2026);
   const [availableYears, setAvailableYears] = useState(computeBaseYears());
   const [monthIdx, setMonthIdx] = useState(() => new Date().getMonth());
-  const [sellers, setSellers] = useState(DEFAULT_SELLERS);
+  const [sellerRegistry, setSellers] = useState(DEFAULT_SELLERS);
   const [activeSellerId, setActiveSellerId] = useState(null);
   const [screen, setScreen] = useState("home"); // 'home' | 'seller' | 'resumo'
   const [yearData, setYearData] = useState({});
@@ -219,6 +234,12 @@ function CreditiProducao() {
   const [manageSellers, setManageSellers] = useState(false);
   const [confirmDeleteSeller, setConfirmDeleteSeller] = useState(null);
   const [pdfError, setPdfError] = useState("");
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [backupList, setBackupList] = useState([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [saveNotice, setSaveNotice] = useState("");
+  const sellers = useMemo(() => visibleSellers(sellerRegistry, yearData), [sellerRegistry, yearData]);
+
 
   function pdfLetterhead(doc) {
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -394,13 +415,21 @@ function CreditiProducao() {
 
   async function mutateStored(key, fallback, change) {
     if (writeLock.current) return false;
-    writeLock.current = true; setSaving(true); setError("");
+    writeLock.current = true; setSaving(true); setError(""); setSaveNotice("");
     try {
       const ref = db.collection("crediti_storage").doc(docId(key, true));
+      const backupRef = db.collection("crediti_storage").doc(docId("crediti-backup-" + key + "-" + Date.now() + "-" + uid(), true));
+      const operationTime = new Date().toISOString();
       await db.runTransaction(async tx => {
         const snap = await tx.get(ref);
         const current = snap.exists ? JSON.parse(snap.data().value) : fallback;
         const updated = change(current);
+        // A separate snapshot is committed atomically with the change.
+        // If the backup cannot be saved, the production change also fails.
+        tx.set(backupRef, {
+          value: snap.exists ? snap.data().value : JSON.stringify(fallback),
+          sourceKey: key, createdAt: operationTime, sellers: JSON.stringify(sellers)
+        });
         tx.set(ref, {
           value: JSON.stringify(updated),
           previousValue: snap.exists ? snap.data().value : JSON.stringify(fallback),
@@ -408,6 +437,7 @@ function CreditiProducao() {
           storageVersion: 2
         }, { merge: true });
       });
+      setSaveNotice("Salvo no banco com cópia de segurança.");
       return true;
     } catch (e) {
       setError(e.message && e.message.startsWith("Atenção:") ? e.message : "Não foi salvo. Seus dados continuam no formulário. Confira a internet e tente novamente.");
@@ -554,6 +584,42 @@ function CreditiProducao() {
     setError("Para preservar o caixa e o histórico, a exclusão de vendedores está bloqueada. As produções permanecem vinculadas ao vendedor.");
   }
 
+  async function restoreRecord(id) {
+    if (!dataReady || loading) return;
+    await mutateStored(`crediti-records-${year}`, {}, current => {
+      const item = current._archive && current._archive[id];
+      if (!item || !item.record) throw new Error("Atenção: este registro já foi recuperado.");
+      const updated = JSON.parse(JSON.stringify(current));
+      const records = (updated[item.month] && updated[item.month][item.sellerId]) || [];
+      if (records.some(r => r.id === id)) throw new Error("Atenção: esta produção já está ativa.");
+      if (!updated[item.month]) updated[item.month] = {};
+      updated[item.month][item.sellerId] = [...records, item.record];
+      delete updated._archive[id];
+      return updated;
+    });
+  }
+
+  function downloadBackup(data, name) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = name; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function openRecovery() {
+    setRecoveryOpen(true); setBackupLoading(true); setBackupList([]);
+    try {
+      const prefix = docId(`crediti-backup-crediti-records-${year}-`, true);
+      const snap = await db.collection("crediti_storage")
+        .where(firebase.firestore.FieldPath.documentId(), ">=", prefix)
+        .where(firebase.firestore.FieldPath.documentId(), "<", prefix + "\uf8ff")
+        .orderBy(firebase.firestore.FieldPath.documentId(), "desc").limit(20).get({ source: "server" });
+      setBackupList(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (e) { setError("Não foi possível listar as cópias. Tente novamente com internet."); }
+    finally { setBackupLoading(false); }
+  }
+
   function addYear() {
     const next = Math.max(...availableYears) + 1;
     setAvailableYears([...availableYears, next]);
@@ -613,6 +679,32 @@ function CreditiProducao() {
       )}
 
       <div className="max-w-[860px] mx-auto px-4 sm:px-6 pt-5">
+
+        <div className="mb-4 p-3 rounded-xl border border-[#E7DDAE] bg-white text-[12px]">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="flex-1">{saving ? "Salvando e criando cópia..." : !dataReady ? "Aguardando confirmação do banco. Gravação bloqueada." : saveNotice || "Produções protegidas. Dados confirmados pelo banco."}</span>
+            <button onClick={openRecovery} className="font-bold text-[#8A7A1F]">Cópias e recuperação</button>
+            <button disabled={!dataReady} onClick={() => downloadBackup({ year, sellers, records: yearData, exportedAt: new Date().toISOString() }, `crediti-producao-${year}-${Date.now()}.json`)} className="font-bold text-[#8A7A1F] disabled:opacity-40">Baixar cópia</button>
+          </div>
+        </div>
+        {recoveryOpen && (
+          <section className="mb-5 p-4 rounded-xl border border-[#E7DDAE] bg-white text-[13px]">
+            <div className="flex justify-between mb-3"><strong>Recuperação de {year}</strong><button onClick={() => setRecoveryOpen(false)}>Fechar</button></div>
+            <p className="mb-2">Produções excluídas ficam guardadas aqui.</p>
+            {Object.entries(yearData._archive || {}).length === 0 && <p className="text-[#7A7154]">Nenhuma produção na lixeira.</p>}
+            {Object.entries(yearData._archive || {}).map(([id, item]) => (
+              <div key={id} className="flex gap-3 justify-between border-b py-2">
+                <span>{item.record.cliente} · {MESES[item.month]} · {item.sellerId}</span>
+                <button disabled={saving || !dataReady} onClick={() => restoreRecord(id)} className="font-bold text-[#8A7A1F]">Restaurar</button>
+              </div>
+            ))}
+            <strong className="block mt-4 mb-2">Últimas 20 cópias anteriores às alterações</strong>
+            <p className="text-[#7A7154] mb-2">As cópias são criadas a cada alteração confirmada. Baixar uma cópia não muda o caixa.</p>
+            {backupLoading && <p>Carregando cópias...</p>}
+            {!backupLoading && !backupList.length && <p>Nenhuma cópia deste ano disponível ainda.</p>}
+            {backupList.map(item => <div key={item.id} className="flex justify-between gap-3 border-b py-2"><span>{new Date(item.createdAt).toLocaleString("pt-BR")}</span><button onClick={() => downloadBackup({ year, records: JSON.parse(item.value), sellers: JSON.parse(item.sellers || "[]") }, item.id + ".json")} className="font-bold text-[#8A7A1F]">Baixar</button></div>)}
+          </section>
+        )}
 
         {/* ============ HOME ============ */}
         {screen === "home" && (
@@ -679,22 +771,7 @@ function CreditiProducao() {
                         <div className="font-bold text-[14px] text-[#17160F] truncate">{s.nome}</div>
                         <div className="text-[11.5px] text-[#8A8672]">{t.count} lançamento(s) em {MESES[monthIdx].toLowerCase()}</div>
                       </div>
-                      {sellers.length > 1 ? (
-                        confirmDeleteSeller === s.id ? (
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            <span className="text-[11.5px] text-[#7A7154]">remover?</span>
-                            <button onClick={() => { removeSeller(s.id); setConfirmDeleteSeller(null); }} className="text-[12px] font-bold text-white bg-[#A3271E] px-2.5 py-1.5 rounded-lg">Sim</button>
-                            <button onClick={() => setConfirmDeleteSeller(null)} className="text-[12px] font-bold text-[#7A7154] bg-[#F5EDCB] px-2.5 py-1.5 rounded-lg">Não</button>
-                          </div>
-                        ) : (
-                          <button onClick={() => setConfirmDeleteSeller(s.id)} title="Remover vendedor"
-                            className="flex items-center gap-1.5 text-[12px] font-bold text-[#A3271E] border border-[#F0C4BF] bg-[#FBE4E1] px-2.5 py-1.5 rounded-lg flex-shrink-0 hover:bg-[#f5d3ce] transition">
-                            <Trash2 size={13} /> Remover
-                          </button>
-                        )
-                      ) : (
-                        <span className="text-[11px] text-[#C9BE85] flex-shrink-0">único vendedor</span>
-                      )}
+                      <span className="text-[11px] text-[#8A8672]">Histórico protegido</span>
                     </div>
                   );
                 }
