@@ -253,6 +253,7 @@ async function vaultEncrypt(key, value, context) {
 function CommissionVault({year, monthIdx, yearData, sellers, onClose}) {
   const [key,setKey] = useState(null);
   const [password,setPassword] = useState('');
+  const [showPassword,setShowPassword] = useState(false);
   const [busy,setBusy] = useState(false);
   const [message,setMessage] = useState('');
   const [values,setValues] = useState({});
@@ -278,25 +279,27 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose}) {
   },[key,year]);
   async function unlock(event) {
     event.preventDefault();setBusy(true);setMessage('');
-    const entered=password;setPassword('');
+    const entered=password;
+    if (!window.crypto?.subtle) {setMessage('Abra o sistema pelo endereço https para usar a senha.');setBusy(false);return;}
     try {
       const candidate=await vaultKey(entered);
       if(await vaultDecrypt(candidate,VAULT_CONFIG)!=='crediti-private-commission-v1') throw new Error();
-      if(alive.current)setKey(candidate);
-    } catch(e) {if(alive.current)setMessage('Senha incorreta ou navegador sem suporte. Tente novamente.');}
+      if(alive.current){setPassword('');setShowPassword(false);setKey(candidate);}
+    } catch(e) {if(alive.current)setMessage('Senha incorreta. Use o olho para conferir o que digitou e tente novamente.');}
     finally {if(alive.current)setBusy(false);}
   }
   const rows = Object.entries(yearData[monthIdx] || {}).flatMap(([sellerId,records]) => (records || []).filter(r=>!r.deletedAt).map(r=>({record:r,id:`${sellerId}:${r.id}`,seller:sellers.find(s=>s.id===sellerId)?.nome || sellers.find(s=>s.id===sellerId)?.name || sellerId})));
-  const totals=rows.reduce((sum,row)=>{const value=values[row.id];if(value){sum.total+=value.cents;sum[value.received?'received':'pending']+=value.cents;}return sum;},{total:0,received:0,pending:0});
+  const totals=rows.reduce((sum,row)=>{const value=values[row.id];sum.extra+=Math.round(parseNum(row.record.comissaoExtra)*100);sum.partner+=Math.round(parseNum(row.record.comissaoParceiro)*100);if(value){sum.promoter+=value.promoterCents || 0;sum.total+=value.cents;sum[value.received?'received':'pending']+=value.cents;}return sum;},{total:0,received:0,pending:0,promoter:0,extra:0,partner:0});
+  const suggestedCents = edit ? Math.round(parseNum(edit.promoter)*100)+edit.extraCents-edit.partnerCents : 0;
   async function save(event) {
     event.preventDefault();
     if(!edit || !key || !ready || busy)return;
     if(!edit.amount.trim()){setMessage('Informe a comissão líquida da Crediti.');return;}
     const amount=parseNum(edit.amount);
-    if(!Number.isFinite(amount)||amount<0){setMessage('Informe um valor válido.');return;}
+    if(!Number.isFinite(amount)||amount<0||!Number.isFinite(parseNum(edit.promoter))||parseNum(edit.promoter)<0){setMessage('Informe um valor válido.');return;}
     setBusy(true);setMessage('');
     try {
-      const payload=await vaultEncrypt(key,{cents:Math.round(amount*100),received:edit.received},context(edit.id));
+      const payload=await vaultEncrypt(key,{cents:Math.round(amount*100),received:edit.received,promoterCents:edit.promoter.trim()?Math.round(parseNum(edit.promoter)*100):null},context(edit.id));
       const ref=db.collection('crediti_storage').doc('__private_commissions_' + year);
       await db.runTransaction(async tx=>{
         const snap=await tx.get(ref);const entries=snap.exists?snap.data().entries || {}:{};
@@ -310,13 +313,14 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose}) {
   return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Comissão Crediti">
     <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
       <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">Comissão Crediti</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
-      {!key ? <form onSubmit={unlock} className="space-y-3"><p>Digite sua senha para consultar e lançar os valores da Crediti.</p><label className="block">Senha<input autoFocus type="password" autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input mt-1" required /></label><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
+      {!key ? <form onSubmit={unlock} className="space-y-3"><p>Digite sua senha para consultar e lançar os valores da Crediti.</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" autoFocus type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
         <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Informe o valor que ficou para a Crediti, já descontado o parceiro. O sistema não desconta novamente.</p>
         {!ready ? <p>Carregando comissões…</p> : <>
           <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Comissão Crediti no mês" value={formatBRL(totals.total/100)} /><StatCard label="Entrou no caixa" value={formatBRL(totals.received/100)} /><StatCard label="Falta receber" value={formatBRL(totals.pending/100)} /></div>
+          <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Recebido da promotora" value={formatBRL(totals.promoter/100)} /><StatCard label="Comissão por fora" value={formatBRL(totals.extra/100)} /><StatCard label="Comissão do parceiro" value={formatBRL(totals.partner/100)} /></div><p className="text-sm mb-4">Promotora + por fora − parceiro: <b>{formatBRL((totals.promoter+totals.extra-totals.partner)/100)}</b>. O total da Crediti acima usa somente o líquido que você informou, sem somar valores duas vezes.</p>
           {rows.length===0 && <p>Nenhuma proposta neste mês.</p>}
-          {rows.map(row=><div key={row.id} className="border rounded-lg p-3 mb-2"><div className="font-bold">{row.record.cliente}</div><div className="text-sm">{row.seller} · {row.record.produto} · {fmtDate(row.record.data)}</div><div className="flex justify-between items-center gap-2 mt-2"><span>{values[row.id]?`${formatBRL(values[row.id].cents/100)} · ${values[row.id].received?'Entrou no caixa':'Falta receber'}`:'Comissão não informada'}</span><button disabled={busy} className="border rounded-lg px-3 py-1 font-bold" onClick={()=>{setMessage('');setEdit({id:row.id,client:row.record.cliente,amount:values[row.id]?formatBRL(values[row.id].cents/100):'',received:values[row.id]?.received || false,baseline:encrypted[row.id] || null});}}>Lançar / editar</button></div></div>)}
-          {edit && <form onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 mt-4 space-y-3"><h3 className="font-bold">{edit.client}</h3><label className="block">Comissão Crediti, já descontado o parceiro<input autoFocus className="input mt-1" inputMode="decimal" value={edit.amount} onChange={e=>setEdit({...edit,amount:maskCurrency(e.target.value)})} required /></label><label className="flex gap-2"><input type="checkbox" checked={edit.received} onChange={e=>setEdit({...edit,received:e.target.checked})} />Já entrou no caixa</label><div className="flex gap-3"><button disabled={busy} className="bg-[#FDCA01] rounded-lg font-bold px-4 py-2">{busy?'Salvando…':'Salvar comissão'}</button><button type="button" disabled={busy} onClick={()=>setEdit(null)}>Cancelar</button></div></form>}
+          {rows.map(row=><div key={row.id} className="border rounded-lg p-3 mb-2"><div className="font-bold">{row.record.cliente}</div><div className="text-sm">{row.seller} · {row.record.produto} · {fmtDate(row.record.data)}</div><div className="text-sm mt-1">Promotora: {values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):"Não informada"} · Por fora: {formatBRL(row.record.comissaoExtra)} · Parceiro: {formatBRL(row.record.comissaoParceiro)}</div><div className="flex justify-between items-center gap-2 mt-2"><span>{values[row.id]?`${formatBRL(values[row.id].cents/100)} · ${values[row.id].received?'Entrou no caixa':'Falta receber'}`:'Comissão não informada'}</span><button disabled={busy} className="border rounded-lg px-3 py-1 font-bold" onClick={()=>{setMessage('');setEdit({id:row.id,client:row.record.cliente,amount:values[row.id]?formatBRL(values[row.id].cents/100):'',promoter:values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):'',extraCents:Math.round(parseNum(row.record.comissaoExtra)*100),partnerCents:Math.round(parseNum(row.record.comissaoParceiro)*100),received:values[row.id]?.received || false,baseline:encrypted[row.id] || null});}}>Lançar / editar</button></div></div>)}
+          {edit && <form onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 mt-4 space-y-3"><h3 className="font-bold">{edit.client}</h3><label className="block">Comissão recebida da promotora<input className="input mt-1" inputMode="decimal" value={edit.promoter} onChange={e=>setEdit({...edit,promoter:maskCurrency(e.target.value)})} placeholder="R$ 0,00" /></label><p className="text-sm">Comissão por fora: <b>{formatBRL(edit.extraCents/100)}</b> · Comissão do parceiro: <b>{formatBRL(edit.partnerCents/100)}</b></p><div className="rounded-lg bg-[#FFFBEE] p-3 text-sm">Promotora + por fora − parceiro = <b>{formatBRL(suggestedCents/100)}</b><button type="button" disabled={!edit.promoter.trim()||suggestedCents<0} className="block font-bold underline mt-1 disabled:opacity-40" onClick={()=>setEdit({...edit,amount:formatBRL(suggestedCents/100)})}>Usar esse valor na comissão Crediti</button></div><label className="block">Comissão Crediti, já descontado o parceiro<input autoFocus className="input mt-1" inputMode="decimal" value={edit.amount} onChange={e=>setEdit({...edit,amount:maskCurrency(e.target.value)})} required /></label><label className="flex gap-2"><input type="checkbox" checked={edit.received} onChange={e=>setEdit({...edit,received:e.target.checked})} />Já entrou no caixa</label><div className="flex gap-3"><button disabled={busy} className="bg-[#FDCA01] rounded-lg font-bold px-4 py-2">{busy?'Salvando…':'Salvar comissão'}</button><button type="button" disabled={busy} onClick={()=>setEdit(null)}>Cancelar</button></div></form>}
         </>}
       </>}
       {message && <p role="status" className="mt-3 text-sm font-bold">{message}</p>}
