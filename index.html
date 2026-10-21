@@ -250,6 +250,10 @@ async function vaultEncrypt(key, value, context) {
   const data = await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(context)},key,new TextEncoder().encode(JSON.stringify(value)));
   return {iv:vaultBase64(iv),data:vaultBase64(data)};
 }
+function sameCommissionPayload(a,b) {
+  if(!a || !b)return !a && !b;
+  return a.iv===b.iv && a.data===b.data;
+}
 function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, exportRequested}) {
   const [key,setKey] = useState(null);
   const [password,setPassword] = useState('');
@@ -263,6 +267,8 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   const [ready,setReady] = useState(false);
   const [edit,setEdit] = useState(null);
   const alive = React.useRef(true);
+  const commissionSaveLock = React.useRef(false);
+  const commissionPanel = React.useRef(null);
   useEffect(() => { alive.current=true; return () => {alive.current=false;}; },[]);
   const context = id => `crediti-commission-v1:${year}:${id}`;
   useEffect(() => {
@@ -297,25 +303,26 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   const suggestedCents = edit ? Math.round(parseNum(edit.promoter)*100)+edit.extraCents-edit.partnerCents : 0;
   async function save(event) {
     event.preventDefault();
-    if(!edit || !key || !ready || busy)return;
+    if(!edit || !key || !ready || busy || commissionSaveLock.current)return;
     if(!edit.amount.trim()){setMessage('Informe a comissão líquida da Crediti.');return;}
     const amount=parseNum(edit.amount);
     if(!Number.isFinite(amount)||amount<0||!Number.isFinite(parseNum(edit.promoter))||parseNum(edit.promoter)<0){setMessage('Informe um valor válido.');return;}
+    commissionSaveLock.current=true;
     setBusy(true);setMessage('');
     try {
       const payload=await vaultEncrypt(key,{cents:Math.round(amount*100),received:edit.received,promoterCents:edit.promoter.trim()?Math.round(parseNum(edit.promoter)*100):null,extraReceived:edit.extraReceived,partnerPaid:edit.partnerPaid},context(edit.id));
       const ref=db.collection('crediti_storage').doc('__private_commissions_' + year);
       await db.runTransaction(async tx=>{
         const snap=await tx.get(ref);const entries=snap.exists?snap.data().entries || {}:{};
-        if(JSON.stringify(entries[edit.id] || null)!==JSON.stringify(edit.baseline))throw new Error('Esta comissão mudou em outro aparelho. Feche a edição e abra novamente.');
+        if(!sameCommissionPayload(entries[edit.id] || null,edit.baseline))throw new Error('Esta comissão mudou em outro aparelho. Feche a edição e abra novamente.');
         tx.set(ref,{entries:{...entries,[edit.id]:payload},updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
       });
-      if(alive.current){setEdit(null);setMessage('Comissão salva.');}
+      if(alive.current){setEdit(null);setNameSearch('');setMessage('Comissão salva. Você já pode lançar a próxima.');if(commissionPanel.current)commissionPanel.current.scrollTop=0;}
     } catch(e) {if(alive.current)setMessage(e.message?.includes('outro aparelho')?e.message:'Não foi possível salvar. O valor anterior foi preservado.');}
-    finally {if(alive.current)setBusy(false);}
+    finally {commissionSaveLock.current=false;if(alive.current)setBusy(false);}
   }
   return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Comissão Crediti">
-    <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+    <div ref={commissionPanel} className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
       <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">Comissão Crediti</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
       {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para consultar e lançar os valores da Crediti.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" autoFocus type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
         <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Informe o valor que ficou para a Crediti, já descontado o parceiro. O sistema não desconta novamente.</p>
