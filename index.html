@@ -233,7 +233,99 @@ function filterClientRecords(records, query) {
   return records.filter(r => normalize(r.cliente).includes(normalize(text)));
 }
 
+const VAULT_CONFIG = {"salt":"uM61W7n2A44opwoG6YqAtg==","iv":"MlXftSIAdwIbl0K5","data":"yjMq52By+qwW1lLHac9010tbYPCScpbJSpgp/907ro7Qfh7fsPVCyKl4Ar+y"};
+const vaultBytes = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
+const vaultBase64 = value => btoa(String.fromCharCode(...new Uint8Array(value)));
+async function vaultKey(password) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt:vaultBytes(VAULT_CONFIG.salt),iterations:600000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+async function vaultDecrypt(key, payload, context) {
+  const options = {name:'AES-GCM',iv:vaultBytes(payload.iv)};
+  if (context) options.additionalData = new TextEncoder().encode(context);
+  return new TextDecoder().decode(await crypto.subtle.decrypt(options,key,vaultBytes(payload.data)));
+}
+async function vaultEncrypt(key, value, context) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(context)},key,new TextEncoder().encode(JSON.stringify(value)));
+  return {iv:vaultBase64(iv),data:vaultBase64(data)};
+}
+function CommissionVault({year, monthIdx, yearData, sellers, onClose}) {
+  const [key,setKey] = useState(null);
+  const [password,setPassword] = useState('');
+  const [busy,setBusy] = useState(false);
+  const [message,setMessage] = useState('');
+  const [values,setValues] = useState({});
+  const [encrypted,setEncrypted] = useState({});
+  const [ready,setReady] = useState(false);
+  const [edit,setEdit] = useState(null);
+  const alive = React.useRef(true);
+  useEffect(() => { alive.current=true; return () => {alive.current=false;}; },[]);
+  const context = id => `crediti-commission-v1:${year}:${id}`;
+  useEffect(() => {
+    if (!key) return;
+    let active=true, revision=0;
+    const stop = db.collection('crediti_storage').doc('__private_commissions_' + year).onSnapshot(async snap => {
+      const version=++revision;
+      try {
+        const payloads=snap.exists ? snap.data().entries || {} : {};
+        const decoded={};
+        for (const [id,payload] of Object.entries(payloads)) decoded[id]=JSON.parse(await vaultDecrypt(key,payload,context(id)));
+        if (active && version===revision) {setValues(decoded);setEncrypted(payloads);setReady(true);setMessage('');}
+      } catch(e) {if(active){setReady(false);setValues({});setMessage('Não foi possível abrir os valores. Nenhum dado foi alterado.');}}
+    },() => {if(active){setReady(false);setValues({});setMessage('Não foi possível carregar as comissões. Confira a conexão e tente novamente.');}});
+    return () => {active=false;stop();};
+  },[key,year]);
+  async function unlock(event) {
+    event.preventDefault();setBusy(true);setMessage('');
+    const entered=password;setPassword('');
+    try {
+      const candidate=await vaultKey(entered);
+      if(await vaultDecrypt(candidate,VAULT_CONFIG)!=='crediti-private-commission-v1') throw new Error();
+      if(alive.current)setKey(candidate);
+    } catch(e) {if(alive.current)setMessage('Senha incorreta ou navegador sem suporte. Tente novamente.');}
+    finally {if(alive.current)setBusy(false);}
+  }
+  const rows = Object.entries(yearData[monthIdx] || {}).flatMap(([sellerId,records]) => (records || []).filter(r=>!r.deletedAt).map(r=>({record:r,id:`${sellerId}:${r.id}`,seller:sellers.find(s=>s.id===sellerId)?.nome || sellers.find(s=>s.id===sellerId)?.name || sellerId})));
+  const totals=rows.reduce((sum,row)=>{const value=values[row.id];if(value){sum.total+=value.cents;sum[value.received?'received':'pending']+=value.cents;}return sum;},{total:0,received:0,pending:0});
+  async function save(event) {
+    event.preventDefault();
+    if(!edit || !key || !ready || busy)return;
+    if(!edit.amount.trim()){setMessage('Informe a comissão líquida da Crediti.');return;}
+    const amount=parseNum(edit.amount);
+    if(!Number.isFinite(amount)||amount<0){setMessage('Informe um valor válido.');return;}
+    setBusy(true);setMessage('');
+    try {
+      const payload=await vaultEncrypt(key,{cents:Math.round(amount*100),received:edit.received},context(edit.id));
+      const ref=db.collection('crediti_storage').doc('__private_commissions_' + year);
+      await db.runTransaction(async tx=>{
+        const snap=await tx.get(ref);const entries=snap.exists?snap.data().entries || {}:{};
+        if(JSON.stringify(entries[edit.id] || null)!==JSON.stringify(edit.baseline))throw new Error('Esta comissão mudou em outro aparelho. Feche a edição e abra novamente.');
+        tx.set(ref,{entries:{...entries,[edit.id]:payload},updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+      });
+      if(alive.current){setEdit(null);setMessage('Comissão salva.');}
+    } catch(e) {if(alive.current)setMessage(e.message?.includes('outro aparelho')?e.message:'Não foi possível salvar. O valor anterior foi preservado.');}
+    finally {if(alive.current)setBusy(false);}
+  }
+  return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Comissão Crediti">
+    <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+      <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">Comissão Crediti</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
+      {!key ? <form onSubmit={unlock} className="space-y-3"><p>Digite sua senha para consultar e lançar os valores da Crediti.</p><label className="block">Senha<input autoFocus type="password" autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input mt-1" required /></label><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
+        <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Informe o valor que ficou para a Crediti, já descontado o parceiro. O sistema não desconta novamente.</p>
+        {!ready ? <p>Carregando comissões…</p> : <>
+          <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Comissão Crediti no mês" value={formatBRL(totals.total/100)} /><StatCard label="Entrou no caixa" value={formatBRL(totals.received/100)} /><StatCard label="Falta receber" value={formatBRL(totals.pending/100)} /></div>
+          {rows.length===0 && <p>Nenhuma proposta neste mês.</p>}
+          {rows.map(row=><div key={row.id} className="border rounded-lg p-3 mb-2"><div className="font-bold">{row.record.cliente}</div><div className="text-sm">{row.seller} · {row.record.produto} · {fmtDate(row.record.data)}</div><div className="flex justify-between items-center gap-2 mt-2"><span>{values[row.id]?`${formatBRL(values[row.id].cents/100)} · ${values[row.id].received?'Entrou no caixa':'Falta receber'}`:'Comissão não informada'}</span><button disabled={busy} className="border rounded-lg px-3 py-1 font-bold" onClick={()=>{setMessage('');setEdit({id:row.id,client:row.record.cliente,amount:values[row.id]?formatBRL(values[row.id].cents/100):'',received:values[row.id]?.received || false,baseline:encrypted[row.id] || null});}}>Lançar / editar</button></div></div>)}
+          {edit && <form onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 mt-4 space-y-3"><h3 className="font-bold">{edit.client}</h3><label className="block">Comissão Crediti, já descontado o parceiro<input autoFocus className="input mt-1" inputMode="decimal" value={edit.amount} onChange={e=>setEdit({...edit,amount:maskCurrency(e.target.value)})} required /></label><label className="flex gap-2"><input type="checkbox" checked={edit.received} onChange={e=>setEdit({...edit,received:e.target.checked})} />Já entrou no caixa</label><div className="flex gap-3"><button disabled={busy} className="bg-[#FDCA01] rounded-lg font-bold px-4 py-2">{busy?'Salvando…':'Salvar comissão'}</button><button type="button" disabled={busy} onClick={()=>setEdit(null)}>Cancelar</button></div></form>}
+        </>}
+      </>}
+      {message && <p role="status" className="mt-3 text-sm font-bold">{message}</p>}
+    </div>
+  </div>;
+}
+
 function CreditiProducao() {
+  const [commissionOpen, setCommissionOpen] = useState(false);
   const [year, setYear] = useState(2026);
   const [availableYears, setAvailableYears] = useState(computeBaseYears());
   const [monthIdx, setMonthIdx] = useState(() => new Date().getMonth());
@@ -663,6 +755,7 @@ function CreditiProducao() {
         .input::placeholder{color:#B8AF87}
       `}</style>
 
+      {commissionOpen && <CommissionVault year={year} monthIdx={monthIdx} yearData={yearData} sellers={sellers} onClose={() => setCommissionOpen(false)} />}
       {/* ===== Top bar ===== */}
       <header className="sticky top-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-b border-[#EFE2A8]">
         <div className="max-w-[860px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
@@ -687,6 +780,7 @@ function CreditiProducao() {
         </div>
       </header>
 
+      <div className="max-w-[860px] mx-auto px-4 sm:px-6 pt-3"><button onClick={() => setCommissionOpen(true)} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Comissão Crediti · valores ocultos</button></div>
       {error && (
         <div className="bg-[#FBE4E1] text-[#A3271E] text-[13px] px-4 sm:px-6 py-2.5 flex items-center gap-2 border-b border-[#f0c4bf]">
           <AlertCircle size={15} className="flex-shrink-0" />
@@ -1130,3 +1224,4 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
