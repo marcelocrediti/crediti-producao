@@ -276,6 +276,7 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
     let active=true, revision=0;
     const stop = db.collection('crediti_storage').doc('__private_commissions_' + year).onSnapshot(async snap => {
       const version=++revision;
+      if(active)setReady(false);
       try {
         const payloads=snap.exists ? snap.data().entries || {} : {};
         const decoded={};
@@ -299,7 +300,8 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   const rows = Object.entries(yearData[monthIdx] || {}).flatMap(([sellerId,records]) => (records || []).filter(r=>!r.deletedAt).map(r=>({record:r,id:`${sellerId}:${r.id}`,seller:sellers.find(s=>s.id===sellerId)?.nome || sellers.find(s=>s.id===sellerId)?.name || sellerId})));
   const normalizeCommissionName = text => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
   const filteredCommissionRows = rows.filter(row => normalizeCommissionName(row.record.cliente).includes(normalizeCommissionName(nameSearch)));
-  const totals=rows.reduce((sum,row)=>{const value=values[row.id];sum.extra+=Math.round(parseNum(row.record.comissaoExtra)*100);sum.partner+=Math.round(parseNum(row.record.comissaoParceiro)*100);if(value){sum.promoter+=value.promoterCents || 0;sum.total+=value.cents;sum[value.received?'received':'pending']+=value.cents;}return sum;},{total:0,received:0,pending:0,promoter:0,extra:0,partner:0});
+  const closing=monthlyCommissionReport(yearData,monthIdx,sellers,values);
+  const totals={total:closing.crediti,received:closing.creditiReceived,pending:closing.creditiPending,promoter:closing.promoterReceived,extra:closing.extraReceived,partner:closing.partnerPaid};
   const suggestedCents = edit ? Math.round(parseNum(edit.promoter)*100)+edit.extraCents-edit.partnerCents : 0;
   async function save(event) {
     event.preventDefault();
@@ -327,13 +329,13 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
       {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para consultar e lançar os valores da Crediti.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" autoFocus type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
         <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Informe o valor que ficou para a Crediti, já descontado o parceiro. O sistema não desconta novamente.</p>
         {!ready ? <p>Carregando comissões…</p> : <>
-          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':'Gerar PDF completo da competência'}</button><p className="text-sm mt-2">Para o fechamento correto, marque em cada lançamento se a comissão por fora foi recebida e se o parceiro já foi pago. Salve a edição antes de gerar o PDF.</p></div>
-          <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Comissão Crediti no mês" value={formatBRL(totals.total/100)} /><StatCard label="Entrou no caixa" value={formatBRL(totals.received/100)} /><StatCard label="Falta receber" value={formatBRL(totals.pending/100)} /></div>
-          <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Recebido da promotora" value={formatBRL(totals.promoter/100)} /><StatCard label="Comissão por fora" value={formatBRL(totals.extra/100)} /><StatCard label="Comissão do parceiro" value={formatBRL(totals.partner/100)} /></div><p className="text-sm mb-4">Promotora + por fora − parceiro: <b>{formatBRL((totals.promoter+totals.extra-totals.partner)/100)}</b>. O total da Crediti acima usa somente o líquido que você informou, sem somar valores duas vezes.</p>
+          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':'Gerar PDF completo da competência'}</button><p className="text-sm mt-2">As confirmações de comissão dos lançamentos antigos também são consideradas. Você pode ajustar recebido ou pendente em cada ficha. A tela e o PDF usam a mesma conta.</p></div>
+          <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Comissão Crediti informada" value={formatBRL(totals.total/100)} /><StatCard label="Entrou no caixa" value={formatBRL(totals.received/100)} /><StatCard label="Falta receber" value={formatBRL(totals.pending/100)} /></div>
+          <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Recebido da promotora" value={formatBRL(totals.promoter/100)} /><StatCard label="Por fora recebida" value={formatBRL(totals.extra/100)} /><StatCard label="Pago aos parceiros" value={formatBRL(totals.partner/100)} /></div><p className="text-sm mb-4">Saldo do caixa (recebido da promotora + por fora recebida − parceiros pagos): <b>{formatBRL(closing.balance/100)}</b>.<br />Por fora: {formatBRL(closing.extraTotal/100)} lançados = {formatBRL(closing.extraReceived/100)} recebidos + {formatBRL(closing.extraPending/100)} a receber. Parceiros ainda a pagar: {formatBRL(closing.partnerPending/100)}.<br />Comissão Crediti ainda não informada em {closing.missing} proposta(s). O líquido informado acima não é somado novamente às entradas.</p>
           <div className="mb-4"><label htmlFor="commission-name-search" className="block text-sm font-bold mb-1">Procurar por nome</label><div className="flex gap-2"><input id="commission-name-search" type="search" className="input" placeholder="Digite o nome do cliente" value={nameSearch} onChange={e=>setNameSearch(e.target.value)} />{nameSearch && <button type="button" className="border rounded-lg px-3 font-bold" onClick={()=>setNameSearch('')}>Limpar</button>}</div><p className="text-sm mt-1" role="status">{filteredCommissionRows.length} de {rows.length} proposta(s). Os totais acima são do mês inteiro.</p></div>
           {rows.length===0 && <p>Nenhuma proposta neste mês.</p>}
           {rows.length>0 && filteredCommissionRows.length===0 && <p>Nenhum cliente encontrado com esse nome.</p>}
-          {filteredCommissionRows.map(row=><div key={row.id} className="border rounded-lg p-3 mb-2"><div className="font-bold">{row.record.cliente}</div><div className="text-sm">{row.seller} · {row.record.produto} · {fmtDate(row.record.data)}</div><div className="text-sm mt-1">Promotora: {values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):"Não informada"} · Por fora: {formatBRL(row.record.comissaoExtra)} · Parceiro: {formatBRL(row.record.comissaoParceiro)}</div><div className="flex justify-between items-center gap-2 mt-2"><span>{values[row.id]?`${formatBRL(values[row.id].cents/100)} · ${values[row.id].received?'Entrou no caixa':'Falta receber'}`:'Comissão não informada'}</span><button disabled={busy} className="border rounded-lg px-3 py-1 font-bold" onClick={()=>{setMessage('');setEdit({id:row.id,client:row.record.cliente,amount:values[row.id]?formatBRL(values[row.id].cents/100):'',promoter:values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):'',extraCents:Math.round(parseNum(row.record.comissaoExtra)*100),partnerCents:Math.round(parseNum(row.record.comissaoParceiro)*100),extraReceived:values[row.id]?.extraReceived || false,partnerPaid:values[row.id]?.partnerPaid ?? Boolean(row.record.dataComissaoRecebida),received:values[row.id]?.received || false,baseline:encrypted[row.id] || null});}}>Lançar / editar</button></div></div>)}
+          {filteredCommissionRows.map(row=><div key={row.id} className="border rounded-lg p-3 mb-2"><div className="font-bold">{row.record.cliente}</div><div className="text-sm">{row.seller} · {row.record.produto} · {fmtDate(row.record.data)}</div><div className="text-sm mt-1">Promotora: {values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):"Não informada"} · Por fora: {formatBRL(row.record.comissaoExtra)} ({commissionReceiptStatus(row.record,values[row.id]).extraReceived?"recebida":"a receber"}) · Parceiro: {formatBRL(row.record.comissaoParceiro)} ({commissionReceiptStatus(row.record,values[row.id]).partnerPaid?"pago":"a pagar"})</div><div className="flex justify-between items-center gap-2 mt-2"><span>{values[row.id]?`${formatBRL(values[row.id].cents/100)} · ${values[row.id].received?'Entrou no caixa':'Falta receber'}`:'Comissão não informada'}</span><button disabled={busy} className="border rounded-lg px-3 py-1 font-bold" onClick={()=>{setMessage('');setEdit({id:row.id,client:row.record.cliente,amount:values[row.id]?formatBRL(values[row.id].cents/100):'',promoter:values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):'',extraCents:Math.round(parseNum(row.record.comissaoExtra)*100),partnerCents:Math.round(parseNum(row.record.comissaoParceiro)*100),extraReceived:commissionReceiptStatus(row.record,values[row.id]).extraReceived,partnerPaid:commissionReceiptStatus(row.record,values[row.id]).partnerPaid,received:values[row.id]?.received || false,baseline:encrypted[row.id] || null});}}>Lançar / editar</button></div></div>)}
           {edit && <form onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 mt-4 space-y-3"><h3 className="font-bold">{edit.client}</h3><label className="block">Comissão recebida da promotora<input autoFocus aria-label="Comissão recebida da promotora" className="input mt-1" inputMode="decimal" value={edit.promoter} onChange={e=>setEdit({...edit,promoter:maskCurrency(e.target.value)})} placeholder="R$ 00.000,00" /></label><p className="text-sm text-[#7A7154]">Digite o valor recebido da promotora. Esse campo é preenchido por você.</p><p className="text-sm">Comissão por fora: <b>{formatBRL(edit.extraCents/100)}</b> · Comissão do parceiro: <b>{formatBRL(edit.partnerCents/100)}</b></p><div className="rounded-lg bg-[#FFFBEE] p-3 text-sm">Promotora + por fora − parceiro = <b>{formatBRL(suggestedCents/100)}</b><button type="button" disabled={!edit.promoter.trim()||suggestedCents<0} className="block font-bold underline mt-1 disabled:opacity-40" onClick={()=>setEdit({...edit,amount:formatBRL(suggestedCents/100)})}>Usar esse valor na comissão Crediti</button></div><label className="block">Comissão Crediti, já descontado o parceiro<input aria-label="Comissão Crediti líquida" placeholder="R$ 00.000,00" className="input mt-1" inputMode="decimal" value={edit.amount} onChange={e=>setEdit({...edit,amount:maskCurrency(e.target.value)})} required /></label><label className="flex gap-2"><input type="checkbox" checked={edit.extraReceived} onChange={e=>setEdit({...edit,extraReceived:e.target.checked})} />Comissão por fora já recebida</label><label className="flex gap-2"><input type="checkbox" checked={edit.partnerPaid} onChange={e=>setEdit({...edit,partnerPaid:e.target.checked})} />Comissão do parceiro já paga</label><label className="flex gap-2"><input type="checkbox" checked={edit.received} onChange={e=>setEdit({...edit,received:e.target.checked})} />Já entrou no caixa</label><div className="flex gap-3"><button disabled={busy} className="bg-[#FDCA01] rounded-lg font-bold px-4 py-2">{busy?'Salvando…':'Salvar comissão'}</button><button type="button" disabled={busy} onClick={()=>setEdit(null)}>Cancelar</button></div></form>}
         </>}
       </>}
@@ -342,6 +344,13 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   </div>;
 }
 
+function commissionReceiptStatus(record,value) {
+  const confirmedInOriginalRecord=Boolean(record.dataComissaoRecebida);
+  return {
+    extraReceived:typeof value?.extraReceived==='boolean'?value.extraReceived:confirmedInOriginalRecord,
+    partnerPaid:typeof value?.partnerPaid==='boolean'?value.partnerPaid:confirmedInOriginalRecord
+  };
+}
 function monthlyCommissionReport(yearData, monthIdx, sellers, privateValues) {
   const report={partners:[],extraReceived:0,extraPending:0,promoterReceived:0,partnerPaid:0,partnerPending:0,crediti:0,creditiReceived:0,creditiPending:0,missing:0,count:0};
   for (const [sellerId,records] of Object.entries(yearData[monthIdx] || {})) {
@@ -350,8 +359,9 @@ function monthlyCommissionReport(yearData, monthIdx, sellers, privateValues) {
       if(record.deletedAt)continue;
       const value=privateValues[`${sellerId}:${record.id}`];
       const extra=Math.round(parseNum(record.comissaoExtra)*100),payment=Math.round(parseNum(record.comissaoParceiro)*100);
-      partner[value?.extraReceived?'extraReceived':'extraPending']+=extra;
-      partner[(value?.partnerPaid ?? Boolean(record.dataComissaoRecebida))?'partnerPaid':'partnerPending']+=payment;
+      const status=commissionReceiptStatus(record,value);
+      partner[status.extraReceived?'extraReceived':'extraPending']+=extra;
+      partner[status.partnerPaid?'partnerPaid':'partnerPending']+=payment;
       partner.promoterReceived+=value?.promoterCents || 0;
       partner.crediti+=value?.cents || 0;
       partner.count++;report.count++;
@@ -361,6 +371,9 @@ function monthlyCommissionReport(yearData, monthIdx, sellers, privateValues) {
     report.partners.push(partner);
     for(const field of ['extraReceived','extraPending','promoterReceived','partnerPaid','partnerPending','crediti'])report[field]+=partner[field];
   }
+  report.extraTotal=report.extraReceived+report.extraPending;
+  report.partnerTotal=report.partnerPaid+report.partnerPending;
+  report.incomeRegistered=report.extraTotal+report.promoterReceived;
   report.income=report.extraReceived+report.promoterReceived;
   report.balance=report.income-report.partnerPaid;
   return report;
@@ -370,8 +383,11 @@ function appendCommissionClosing(doc,y,report,layout) {
   function room(height){if(y+height>doc.internal.pageSize.getHeight()-45){doc.addPage();y=letterhead(doc);}}
   room(100);y=section(doc,'COMISSÕES POR PARCEIRO - COMPETÊNCIA',y);
   y=table(doc,y,['Parceiro / vendedor','Por fora recebido','Promotora recebida','Pago ao parceiro','A pagar parceiro'],report.partners.map(p=>[p.name,formatBRL(p.extraReceived/100),formatBRL(p.promoterReceived/100),formatBRL(p.partnerPaid/100),formatBRL(p.partnerPending/100)]),['TOTAL',formatBRL(report.extraReceived/100),formatBRL(report.promoterReceived/100),formatBRL(report.partnerPaid/100),formatBRL(report.partnerPending/100)]);
-  room(250);y=section(doc,'FECHAMENTO FINANCEIRO DA COMPETÊNCIA',y);
+  room(100);y=section(doc,'CONFERÊNCIA DE TODA A COMISSÃO POR FORA',y);
+  y=table(doc,y,['Parceiro / vendedor','Total lançado','Recebido','A receber'],report.partners.map(p=>[p.name,formatBRL((p.extraReceived+p.extraPending)/100),formatBRL(p.extraReceived/100),formatBRL(p.extraPending/100)]),['TOTAL',formatBRL(report.extraTotal/100),formatBRL(report.extraReceived/100),formatBRL(report.extraPending/100)]);
+  room(290);y=section(doc,'FECHAMENTO FINANCEIRO DA COMPETÊNCIA',y);
   y=table(doc,y,['Descrição','Valor'],[
+    ['Comissão por fora: TOTAL LANÇADO',formatBRL(report.extraTotal/100)],
     ['Comissão por fora recebida',formatBRL(report.extraReceived/100)],
     ['Comissão recebida da promotora',formatBRL(report.promoterReceived/100)],
     ['TOTAL DE COMISSÕES RECEBIDAS (por fora + promotora)',formatBRL(report.income/100)],
@@ -379,10 +395,11 @@ function appendCommissionClosing(doc,y,report,layout) {
     ['SALDO DO CAIXA (entradas menos parceiros pagos)',formatBRL(report.balance/100)],
     ['Comissão por fora ainda a receber',formatBRL(report.extraPending/100)],
     ['Comissão de parceiros ainda a pagar',formatBRL(report.partnerPending/100)],
+    ['Comissão de parceiros: TOTAL LANÇADO',formatBRL(report.partnerTotal/100)],
     ['Comissão Crediti informada: já entrou no caixa',formatBRL(report.creditiReceived/100)],
     ['Comissão Crediti informada: falta receber',formatBRL(report.creditiPending/100)]
   ],['COMISSÃO LÍQUIDA DA CREDITI (informada por você)',formatBRL(report.crediti/100)]);
-  const notes=['O saldo do caixa usa somente valores recebidos e parceiros pagos. A comissão Crediti é o líquido informado por você e não é somada novamente às entradas.',`Comissões Crediti ainda não informadas: ${report.missing} proposta(s). Valores ausentes não foram estimados.`,`Competência das propostas: ${report.count} lançamento(s). Não representa um extrato por data bancária de recebimento.`];
+  const notes=['Recebido + pendente = total lançado. As confirmações antigas de comissão são aproveitadas; a marcação individual, quando ajustada, tem prioridade. A comissão Crediti informada não é somada novamente às entradas.',`Comissões Crediti ainda não informadas: ${report.missing} proposta(s). Valores ausentes não foram estimados.`,`Competência das propostas: ${report.count} lançamento(s). Não representa um extrato por data bancária de recebimento.`];
   for(const note of notes){doc.setFont('helvetica','normal');doc.setFontSize(8);const lines=doc.splitTextToSize(note,doc.internal.pageSize.getWidth()-80);room(lines.length*11+6);doc.text(lines,40,y);y+=lines.length*11+6;}
   return y;
 }
@@ -1283,5 +1300,6 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
