@@ -254,7 +254,7 @@ function sameCommissionPayload(a,b) {
   if(!a || !b)return !a && !b;
   return a.iv===b.iv && a.data===b.data;
 }
-function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, exportRequested}) {
+function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, exportRequested, availableYears, onSelectYear, onSelectMonth, recordsReady}) {
   const [key,setKey] = useState(null);
   const [password,setPassword] = useState('');
   const [showPassword,setShowPassword] = useState(false);
@@ -265,6 +265,7 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   const [values,setValues] = useState({});
   const [encrypted,setEncrypted] = useState({});
   const [ready,setReady] = useState(false);
+  const [privateYear,setPrivateYear] = useState(null);
   const [edit,setEdit] = useState(null);
   const alive = React.useRef(true);
   const commissionSaveLock = React.useRef(false);
@@ -281,7 +282,7 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
         const payloads=snap.exists ? snap.data().entries || {} : {};
         const decoded={};
         for (const [id,payload] of Object.entries(payloads)) decoded[id]=JSON.parse(await vaultDecrypt(key,payload,context(id)));
-        if (active && version===revision) {setValues(decoded);setEncrypted(payloads);setReady(true);setMessage('');}
+        if (active && version===revision) {setValues(decoded);setEncrypted(payloads);setPrivateYear(year);setReady(true);setMessage('');}
       } catch(e) {if(active){setReady(false);setValues({});setMessage('Não foi possível abrir os valores. Nenhum dado foi alterado.');}}
     },() => {if(active){setReady(false);setValues({});setMessage('Não foi possível carregar as comissões. Confira a conexão e tente novamente.');}});
     return () => {active=false;stop();};
@@ -302,10 +303,21 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   const filteredCommissionRows = rows.filter(row => normalizeCommissionName(row.record.cliente).includes(normalizeCommissionName(nameSearch)));
   const closing=monthlyCommissionReport(yearData,monthIdx,sellers,values);
   const totals={total:closing.crediti,received:closing.creditiReceived,pending:closing.creditiPending,promoter:closing.promoterReceived,extra:closing.extraReceived,partner:closing.partnerPaid};
+  const historyYears=[...new Set([...(availableYears || []),year,new Date().getFullYear()+1])].sort((a,b)=>b-a);
+  const historyBusy=busy || exporting || Boolean(edit);
+  const historyReady=ready && privateYear===year && recordsReady;
+  function selectHistoryMonth(index){
+    if(historyBusy)return;
+    setNameSearch('');setMessage('');onSelectMonth(index);
+  }
+  function selectHistoryYear(next){
+    if(historyBusy || next===year)return;
+    setReady(false);setPrivateYear(null);setValues({});setEncrypted({});setNameSearch('');setMessage('');onSelectYear(next);
+  }
   const suggestedCents = edit ? Math.round(parseNum(edit.promoter)*100)+edit.extraCents-edit.partnerCents : 0;
   async function save(event) {
     event.preventDefault();
-    if(!edit || !key || !ready || busy || commissionSaveLock.current)return;
+    if(!edit || !key || !ready || privateYear!==year || !recordsReady || busy || commissionSaveLock.current)return;
     if(!edit.amount.trim()){setMessage('Informe a comissão líquida da Crediti.');return;}
     const amount=parseNum(edit.amount);
     if(!Number.isFinite(amount)||amount<0||!Number.isFinite(parseNum(edit.promoter))||parseNum(edit.promoter)<0){setMessage('Informe um valor válido.');return;}
@@ -327,9 +339,16 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
     <div ref={commissionPanel} className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
       <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">Comissão Crediti</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
       {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para consultar e lançar os valores da Crediti.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" autoFocus type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
+        <section className="border border-[#E7DDAE] rounded-xl p-3 mb-4" aria-label="Histórico por competência">
+          <div className="flex flex-wrap gap-3 items-center justify-between mb-3"><h3 className="font-bold">Histórico por competência</h3><label className="flex items-center gap-2 text-sm">Ano<select aria-label="Ano do histórico" className="border rounded-lg px-3 py-2" value={year} disabled={historyBusy} onChange={e=>selectHistoryYear(Number(e.target.value))}>{historyYears.map(y=><option key={y} value={y}>{y}</option>)}</select></label></div>
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">{MESES.map((name,index)=>{const count=Object.values(yearData[index] || {}).reduce((sum,list)=>sum+(Array.isArray(list)?list.filter(r=>!r.deletedAt).length:0),0);return <button key={index} type="button" aria-pressed={monthIdx===index} aria-label={`Consultar ${name} de ${year}`} disabled={historyBusy} onClick={()=>selectHistoryMonth(index)} className={`text-left border rounded-lg p-2 disabled:opacity-50 ${monthIdx===index?'bg-[#FDCA01] border-[#D9A400]':'bg-white border-[#E7DDAE]'}`}><span className="block text-sm font-bold">{name}</span><span className="block text-xs">{recordsReady?(count?`${count} proposta(s)`:'Sem lançamentos'):'Carregando…'}</span></button>})}</div>
+          <p className="text-sm mt-3">Cada competência continua guardada para consulta e PDF. Trocar o mês não apaga os meses anteriores.</p>
+          {edit && <p className="text-sm font-bold mt-2">Salve ou cancele a ficha antes de trocar a competência.</p>}
+        </section>
+        <p className="text-sm font-bold mb-2" role="status">Competência aberta: {MESES[monthIdx]} / {year}</p>
         <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Informe o valor que ficou para a Crediti, já descontado o parceiro. O sistema não desconta novamente.</p>
-        {!ready ? <p>Carregando comissões…</p> : <>
-          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':'Gerar PDF completo da competência'}</button><p className="text-sm mt-2">As confirmações de comissão dos lançamentos antigos também são consideradas. Você pode ajustar recebido ou pendente em cada ficha. A tela e o PDF usam a mesma conta.</p></div>
+        {!historyReady ? <p>Carregando a competência {MESES[monthIdx]} / {year}…</p> : <>
+          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':`Gerar PDF de ${MESES[monthIdx]} / ${year}`} </button><p className="text-sm mt-2">As confirmações de comissão dos lançamentos antigos também são consideradas. Você pode ajustar recebido ou pendente em cada ficha. A tela e o PDF usam a mesma conta.</p></div>
           <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Comissão Crediti informada" value={formatBRL(totals.total/100)} /><StatCard label="Entrou no caixa" value={formatBRL(totals.received/100)} /><StatCard label="Falta receber" value={formatBRL(totals.pending/100)} /></div>
           <div className="grid sm:grid-cols-3 gap-3 mb-4"><StatCard label="Recebido da promotora" value={formatBRL(totals.promoter/100)} /><StatCard label="Por fora recebida" value={formatBRL(totals.extra/100)} /><StatCard label="Pago aos parceiros" value={formatBRL(totals.partner/100)} /></div><p className="text-sm mb-4">Saldo do caixa (recebido da promotora + por fora recebida − parceiros pagos): <b>{formatBRL(closing.balance/100)}</b>.<br />Por fora: {formatBRL(closing.extraTotal/100)} lançados = {formatBRL(closing.extraReceived/100)} recebidos + {formatBRL(closing.extraPending/100)} a receber. Parceiros ainda a pagar: {formatBRL(closing.partnerPending/100)}.<br />Comissão Crediti ainda não informada em {closing.missing} proposta(s). O líquido informado acima não é somado novamente às entradas.</p>
           <div className="mb-4"><label htmlFor="commission-name-search" className="block text-sm font-bold mb-1">Procurar por nome</label><div className="flex gap-2"><input id="commission-name-search" type="search" className="input" placeholder="Digite o nome do cliente" value={nameSearch} onChange={e=>setNameSearch(e.target.value)} />{nameSearch && <button type="button" className="border rounded-lg px-3 font-bold" onClick={()=>setNameSearch('')}>Limpar</button>}</div><p className="text-sm mt-1" role="status">{filteredCommissionRows.length} de {rows.length} proposta(s). Os totais acima são do mês inteiro.</p></div>
@@ -831,7 +850,7 @@ function CreditiProducao() {
         .input::placeholder{color:#B8AF87}
       `}</style>
 
-      {commissionOpen && <CommissionVault year={year} monthIdx={monthIdx} yearData={yearData} sellers={sellers} onClose={() => {setCommissionOpen(false);setCommissionPdfRequested(false);}} exportRequested={commissionPdfRequested} onExport={values=>generatePDF("mes",values)} />}
+      {commissionOpen && <CommissionVault year={year} monthIdx={monthIdx} yearData={yearData} sellers={sellers} onClose={() => {setCommissionOpen(false);setCommissionPdfRequested(false);}} exportRequested={commissionPdfRequested} onExport={values=>generatePDF("mes",values)} availableYears={availableYears} recordsReady={dataReady && sellersReady && !loading} onSelectMonth={setMonthIdx} onSelectYear={next=>{setAvailableYears(current=>current.includes(next)?current:[...current,next].sort((a,b)=>a-b));setYear(next);}} />}
       {/* ===== Top bar ===== */}
       <header className="sticky top-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-b border-[#EFE2A8]">
         <div className="max-w-[860px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
@@ -1300,6 +1319,7 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
 
