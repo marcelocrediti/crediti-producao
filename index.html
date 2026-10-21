@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Crediti — Sistema de Produção</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -13,7 +13,42 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
-  body { margin: 0; }
+  *,*::before,*::after{box-sizing:border-box}
+  html{width:100%;min-width:0;overflow-x:clip;overscroll-behavior-x:none;-webkit-text-size-adjust:100%;text-size-adjust:100%;scroll-behavior:auto}
+  body{margin:0;width:100%;min-width:0;max-width:100%;overflow-x:clip;overscroll-behavior-y:none}
+  #root,.app-shell{width:100%;min-width:0;max-width:100%;overflow-x:clip}
+  .app-shell.app-shell{min-height:100svh;overflow-anchor:none;overflow-wrap:anywhere}
+  .flex>*,.grid>*{min-width:0}
+  button,input,select,textarea{max-width:100%}
+  button{touch-action:manipulation;overflow-wrap:anywhere}
+  input,select,textarea{min-width:0}
+  img,svg{max-width:100%}
+  .app-shell .month-tabs{min-width:0}
+  .app-shell .app-overlay{position:fixed;inset:auto 0 auto 0;top:var(--app-visible-top,0px);height:var(--app-visible-height,100dvh);width:100%;max-width:100%;overflow:hidden;overscroll-behavior:none;padding:12px;padding-top:max(12px,env(safe-area-inset-top));padding-bottom:max(12px,env(safe-area-inset-bottom))}
+  .app-shell .modal-panel{min-width:0;max-width:100%;max-height:100%;overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;overflow-anchor:none;scrollbar-gutter:stable}
+  .app-shell .modal-panel p,.app-shell .modal-panel h2,.app-shell .modal-panel h3,.app-shell .modal-panel label,.app-shell .modal-panel span{overflow-wrap:anywhere}
+  .app-bottom-nav{padding-bottom:env(safe-area-inset-bottom)}
+  @media(max-width:639px){
+    input:not([type=checkbox]):not([type=radio]),select,textarea,.input{font-size:16px!important;line-height:1.4!important}
+    input,textarea{scroll-margin-block:20px}
+    .app-shell.app-shell{padding-bottom:calc(90px + env(safe-area-inset-bottom))}
+    .app-shell .app-header-row{flex-wrap:wrap;gap:8px}
+    .app-shell .private-shortcuts>button{width:100%;text-align:left}
+    .app-shell .month-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible;flex:1;gap:6px}
+    .app-shell .month-tabs>button{width:100%;padding:8px 4px;flex-shrink:1}
+    .app-shell .mobile-stats{grid-template-columns:repeat(auto-fit,minmax(min(100%,120px),1fr))}
+    .app-shell .modal-panel{padding:16px;border-radius:16px;max-height:100%}
+    .app-shell .modal-panel form .grid{grid-template-columns:minmax(0,1fr)}
+    .app-shell .modal-panel .flex.justify-between{flex-wrap:wrap}
+    .app-shell .modal-panel .input{width:100%;min-width:0}
+    .app-shell .modal-panel .num,.app-shell .mobile-stats .num{overflow-wrap:anywhere}
+    .app-shell .modal-panel h2{font-size:18px}
+    .app-shell .modal-panel header,.app-shell .modal-panel footer{max-width:100%}
+    .app-shell .record-actions{flex-wrap:wrap}
+    .app-shell .record-actions>div{flex-wrap:wrap}
+  }
+  @media(max-width:359px){.app-shell .history-months{grid-template-columns:repeat(2,minmax(0,1fr))}.app-shell .mobile-stats{grid-template-columns:minmax(0,1fr)}}
+
 </style>
 </head>
 <body>
@@ -344,6 +379,8 @@ function useExpenseLedger(key,year,monthIdx){
 }
 function PrivateExpenses({ledger,year,monthIdx,onEditingChange,onExport}){
   const [draft,setDraft]=useState(null),[notice,setNotice]=useState(''),[exporting,setExporting]=useState(false);
+  const expenseForm=React.useRef(null);
+  useEffect(()=>{if(draft)expenseForm.current?.scrollIntoView({block:'start',behavior:'instant'});},[draft?.id]);
   useEffect(()=>{onEditingChange(Boolean(draft));return()=>onEditingChange(false);},[Boolean(draft)]);
   const items=ledger.data.items.filter(item=>!item.deletedAt).sort((a,b)=>a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''))||a.name.localeCompare(b.name));
   const removed=ledger.data.items.filter(item=>item.deletedAt);
@@ -366,9 +403,9 @@ function PrivateExpenses({ledger,year,monthIdx,onEditingChange,onExport}){
         <button type="button" disabled={disabled||Boolean(draft)} onClick={async()=>{setNotice('');if(await ledger.mutate({type:ledger.data.closed?'reopen':'close'}))setNotice(ledger.data.closed?'Competência reaberta para edição.':'Competência fechada. As despesas continuam disponíveis para consulta e PDF.');}} className="border rounded-lg px-3 py-2 font-bold disabled:opacity-50">{ledger.data.closed?'Reabrir competência':'Fechar competência'}</button>
         <button type="button" disabled={disabled||Boolean(draft)} onClick={async()=>{setExporting(true);try{await onExport(ledger.data);}finally{setExporting(false);}}} className="border rounded-lg px-3 py-2 font-bold disabled:opacity-50">{exporting?'Gerando PDF…':'PDF das despesas'}</button>
       </div>
-      {draft&&<form onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 space-y-3">
+      {draft&&<form ref={expenseForm} onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 space-y-3">
         <label className="block text-sm font-bold">Data<input aria-label="Data da despesa" className="input mt-1" inputMode="numeric" value={draft.date} onChange={e=>setDraft({...draft,date:maskDateInput(e.target.value)})} placeholder="DD/MM/AAAA" required /></label>
-        <label className="block text-sm font-bold">Nome da despesa<input autoFocus aria-label="Nome da despesa" className="input mt-1 uppercase" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value.toLocaleUpperCase('pt-BR')})} placeholder="EX.: ALUGUEL DO ESCRITÓRIO" required /></label>
+        <label className="block text-sm font-bold">Nome da despesa<input aria-label="Nome da despesa" className="input mt-1 uppercase" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value.toLocaleUpperCase('pt-BR')})} placeholder="EX.: ALUGUEL DO ESCRITÓRIO" required /></label>
         <label className="block text-sm font-bold">Valor da despesa<input aria-label="Valor da despesa" className="input mt-1" inputMode="decimal" value={draft.amount} onChange={e=>setDraft({...draft,amount:maskCurrency(e.target.value)})} placeholder="R$ 00.000,00" required /></label>
         <div className="flex gap-3"><button disabled={disabled||ledger.data.closed} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50">{ledger.busy?'Salvando…':'Salvar despesa'}</button><button type="button" disabled={ledger.busy} onClick={()=>setDraft(null)}>Cancelar</button></div>
       </form>}
@@ -410,6 +447,7 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   const alive = React.useRef(true);
   const commissionSaveLock = React.useRef(false);
   const commissionPanel = React.useRef(null);
+  useEffect(()=>{if(edit)commissionPanel.current?.querySelector('form')?.scrollIntoView({block:'start',behavior:'instant'});},[edit?.id]);
   useEffect(() => { alive.current=true; return () => {alive.current=false;}; },[]);
   const context = id => `crediti-commission-v1:${year}:${id}`;
   useEffect(() => {
@@ -474,14 +512,14 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
     } catch(e) {if(alive.current)setMessage(e.message?.includes('outro aparelho')?e.message:'Não foi possível salvar. O valor anterior foi preservado.');}
     finally {commissionSaveLock.current=false;if(alive.current)setBusy(false);}
   }
-  return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Área privada Crediti">
-    <div ref={commissionPanel} className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+  return <div className="app-overlay fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Área privada Crediti">
+    <div ref={commissionPanel} className="modal-panel bg-white rounded-2xl p-5 w-full max-w-3xl overflow-y-auto">
       <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">{activeTab==='expenses'?'Despesas Crediti':'Comissão Crediti'}</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
-      {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para acessar as comissões e despesas da Crediti.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" autoFocus type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
+      {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para acessar as comissões e despesas da Crediti.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
         <div className="flex flex-wrap gap-2 mb-4" role="group" aria-label="Áreas privadas"><button type="button" aria-pressed={activeTab==='commissions'} disabled={historyBusy} onClick={()=>setActiveTab('commissions')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='commissions'?'bg-[#FDCA01]':''}`}>Comissões Crediti</button><button type="button" aria-pressed={activeTab==='expenses'} disabled={historyBusy} onClick={()=>setActiveTab('expenses')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='expenses'?'bg-[#FDCA01]':''}`}>Despesas Crediti</button></div>
         <section className="border border-[#E7DDAE] rounded-xl p-3 mb-4" aria-label="Histórico por competência">
           <div className="flex flex-wrap gap-3 items-center justify-between mb-3"><h3 className="font-bold">Histórico por competência</h3><label className="flex items-center gap-2 text-sm">Ano<select aria-label="Ano do histórico" className="border rounded-lg px-3 py-2" value={year} disabled={historyBusy} onChange={e=>selectHistoryYear(Number(e.target.value))}>{historyYears.map(y=><option key={y} value={y}>{y}</option>)}</select></label></div>
-          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">{MESES.map((name,index)=>{const count=Object.values(yearData[index] || {}).reduce((sum,list)=>sum+(Array.isArray(list)?list.filter(r=>!r.deletedAt).length:0),0);return <button key={index} type="button" aria-pressed={monthIdx===index} aria-label={`Consultar ${name} de ${year}`} disabled={historyBusy} onClick={()=>selectHistoryMonth(index)} className={`text-left border rounded-lg p-2 disabled:opacity-50 ${monthIdx===index?'bg-[#FDCA01] border-[#D9A400]':'bg-white border-[#E7DDAE]'}`}><span className="block text-sm font-bold">{name}</span><span className="block text-xs">{activeTab==='expenses'?(monthIdx===index&&expenseLedger.ready?`${expenseLedger.data.items.filter(item=>!item.deletedAt).length} despesa(s)`:'Consultar despesas'):(recordsReady?(count?`${count} proposta(s)`:'Sem lançamentos'):'Carregando…')}</span></button>})}</div>
+          <div className="history-months grid grid-cols-3 sm:grid-cols-4 gap-2">{MESES.map((name,index)=>{const count=Object.values(yearData[index] || {}).reduce((sum,list)=>sum+(Array.isArray(list)?list.filter(r=>!r.deletedAt).length:0),0);return <button key={index} type="button" aria-pressed={monthIdx===index} aria-label={`Consultar ${name} de ${year}`} disabled={historyBusy} onClick={()=>selectHistoryMonth(index)} className={`text-left border rounded-lg p-2 disabled:opacity-50 ${monthIdx===index?'bg-[#FDCA01] border-[#D9A400]':'bg-white border-[#E7DDAE]'}`}><span className="block text-sm font-bold">{name}</span><span className="block text-xs">{activeTab==='expenses'?(monthIdx===index&&expenseLedger.ready?`${expenseLedger.data.items.filter(item=>!item.deletedAt).length} despesa(s)`:'Consultar despesas'):(recordsReady?(count?`${count} proposta(s)`:'Sem lançamentos'):'Carregando…')}</span></button>})}</div>
           <p className="text-sm mt-3">Cada competência continua guardada para consulta e PDF. Trocar o mês não apaga os meses anteriores.</p>
           {(edit||expenseEditing) && <p className="text-sm font-bold mt-2">Salve ou cancele a ficha antes de trocar a competência.</p>}
         </section>
@@ -496,8 +534,8 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
           <div className="mb-4"><label htmlFor="commission-name-search" className="block text-sm font-bold mb-1">Procurar por nome ou CPF</label><div className="flex gap-2"><input id="commission-name-search" type="search" className="input" placeholder="Digite o nome ou CPF do cliente" value={nameSearch} onChange={e=>setNameSearch(e.target.value)} />{nameSearch && <button type="button" className="border rounded-lg px-3 font-bold" onClick={()=>setNameSearch('')}>Limpar</button>}</div><p className="text-sm mt-1" role="status">{filteredCommissionRows.length} de {rows.length} proposta(s). Os totais acima são do mês inteiro.</p></div>
           {rows.length===0 && <p>Nenhuma proposta neste mês.</p>}
           {rows.length>0 && filteredCommissionRows.length===0 && <p>Nenhum cliente encontrado com esse nome ou CPF.</p>}
-          {filteredCommissionRows.map(row=><div key={row.id} className="border rounded-lg p-3 mb-2"><div className="font-bold">{row.record.cliente}</div><div className="text-sm font-semibold">CPF: {formatCommissionCPF(row.record.cpf)}</div><div className="text-sm">{row.seller} · {row.record.produto} · {fmtDate(row.record.data)}</div><div className="text-sm mt-1">Promotora: {values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):"Não informada"} · Por fora: {formatBRL(row.record.comissaoExtra)} ({commissionReceiptStatus(row.record,values[row.id]).extraReceived?"recebida":"a receber"}) · Parceiro: {formatBRL(row.record.comissaoParceiro)}{commissionReceiptStatus(row.record,values[row.id]).partnerPaid?" (pago)":""}</div><div className="flex justify-between items-center gap-2 mt-2"><span>{values[row.id]?`${formatBRL(values[row.id].cents/100)} · ${values[row.id].received?'Entrou no caixa':'Falta receber'}`:'Comissão não informada'}</span><button disabled={busy} className="border rounded-lg px-3 py-1 font-bold" onClick={()=>{setMessage('');setEdit({id:row.id,client:row.record.cliente,cpf:row.record.cpf,amount:values[row.id]?formatBRL(values[row.id].cents/100):'',promoter:values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):'',extraCents:Math.round(parseNum(row.record.comissaoExtra)*100),partnerCents:Math.round(parseNum(row.record.comissaoParceiro)*100),extraReceived:commissionReceiptStatus(row.record,values[row.id]).extraReceived,partnerPaid:commissionReceiptStatus(row.record,values[row.id]).partnerPaid,received:values[row.id]?.received || false,baseline:encrypted[row.id] || null});}}>Lançar / editar</button></div></div>)}
-          {edit && <form onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 mt-4 space-y-3"><h3 className="font-bold">{edit.client}</h3><p className="text-sm font-semibold">CPF: {formatCommissionCPF(edit.cpf)}</p><label className="block">Comissão recebida da promotora<input autoFocus aria-label="Comissão recebida da promotora" className="input mt-1" inputMode="decimal" value={edit.promoter} onChange={e=>setEdit({...edit,promoter:maskCurrency(e.target.value)})} placeholder="R$ 00.000,00" /></label><p className="text-sm text-[#7A7154]">Digite o valor recebido da promotora. Esse campo é preenchido por você.</p><p className="text-sm">Comissão por fora: <b>{formatBRL(edit.extraCents/100)}</b> · Comissão do parceiro: <b>{formatBRL(edit.partnerCents/100)}</b></p><div className="rounded-lg bg-[#FFFBEE] p-3 text-sm">Promotora + por fora − parceiro = <b>{formatBRL(suggestedCents/100)}</b><button type="button" disabled={!edit.promoter.trim()||suggestedCents<0} className="block font-bold underline mt-1 disabled:opacity-40" onClick={()=>setEdit({...edit,amount:formatBRL(suggestedCents/100)})}>Usar esse valor na comissão Crediti</button></div><label className="block">Comissão Crediti, já descontado o parceiro<input aria-label="Comissão Crediti líquida" placeholder="R$ 00.000,00" className="input mt-1" inputMode="decimal" value={edit.amount} onChange={e=>setEdit({...edit,amount:maskCurrency(e.target.value)})} required /></label><label className="flex gap-2"><input type="checkbox" checked={edit.extraReceived} onChange={e=>setEdit({...edit,extraReceived:e.target.checked})} />Comissão por fora já recebida</label><label className="flex gap-2"><input type="checkbox" checked={edit.partnerPaid} onChange={e=>setEdit({...edit,partnerPaid:e.target.checked})} />Comissão do parceiro já paga</label><label className="flex gap-2"><input type="checkbox" checked={edit.received} onChange={e=>setEdit({...edit,received:e.target.checked})} />Já entrou no caixa</label><div className="flex gap-3"><button disabled={busy} className="bg-[#FDCA01] rounded-lg font-bold px-4 py-2">{busy?'Salvando…':'Salvar comissão'}</button><button type="button" disabled={busy} onClick={()=>setEdit(null)}>Cancelar</button></div></form>}
+          {filteredCommissionRows.map(row=><div key={row.id} className="border rounded-lg p-3 mb-2"><div className="font-bold">{row.record.cliente}</div><div className="text-sm font-semibold">CPF: {formatCommissionCPF(row.record.cpf)}</div><div className="text-sm">{row.seller} · {row.record.produto} · {fmtDate(row.record.data)}</div><div className="text-sm mt-1">Promotora: {values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):"Não informada"} · Por fora: {formatBRL(row.record.comissaoExtra)} ({commissionReceiptStatus(row.record,values[row.id]).extraReceived?"recebida":"a receber"}) · Parceiro: {formatBRL(row.record.comissaoParceiro)}{commissionReceiptStatus(row.record,values[row.id]).partnerPaid?" (pago)":""}</div><div className="flex flex-wrap justify-between items-center gap-2 mt-2"><span>{values[row.id]?`${formatBRL(values[row.id].cents/100)} · ${values[row.id].received?'Entrou no caixa':'Falta receber'}`:'Comissão não informada'}</span><button disabled={busy} className="border rounded-lg px-3 py-1 font-bold" onClick={()=>{setMessage('');setEdit({id:row.id,client:row.record.cliente,cpf:row.record.cpf,amount:values[row.id]?formatBRL(values[row.id].cents/100):'',promoter:values[row.id]?.promoterCents!=null?formatBRL(values[row.id].promoterCents/100):'',extraCents:Math.round(parseNum(row.record.comissaoExtra)*100),partnerCents:Math.round(parseNum(row.record.comissaoParceiro)*100),extraReceived:commissionReceiptStatus(row.record,values[row.id]).extraReceived,partnerPaid:commissionReceiptStatus(row.record,values[row.id]).partnerPaid,received:values[row.id]?.received || false,baseline:encrypted[row.id] || null});}}>Lançar / editar</button></div></div>)}
+          {edit && <form onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 mt-4 space-y-3"><h3 className="font-bold">{edit.client}</h3><p className="text-sm font-semibold">CPF: {formatCommissionCPF(edit.cpf)}</p><label className="block">Comissão recebida da promotora<input aria-label="Comissão recebida da promotora" className="input mt-1" inputMode="decimal" value={edit.promoter} onChange={e=>setEdit({...edit,promoter:maskCurrency(e.target.value)})} placeholder="R$ 00.000,00" /></label><p className="text-sm text-[#7A7154]">Digite o valor recebido da promotora. Esse campo é preenchido por você.</p><p className="text-sm">Comissão por fora: <b>{formatBRL(edit.extraCents/100)}</b> · Comissão do parceiro: <b>{formatBRL(edit.partnerCents/100)}</b></p><div className="rounded-lg bg-[#FFFBEE] p-3 text-sm">Promotora + por fora − parceiro = <b>{formatBRL(suggestedCents/100)}</b><button type="button" disabled={!edit.promoter.trim()||suggestedCents<0} className="block font-bold underline mt-1 disabled:opacity-40" onClick={()=>setEdit({...edit,amount:formatBRL(suggestedCents/100)})}>Usar esse valor na comissão Crediti</button></div><label className="block">Comissão Crediti, já descontado o parceiro<input aria-label="Comissão Crediti líquida" placeholder="R$ 00.000,00" className="input mt-1" inputMode="decimal" value={edit.amount} onChange={e=>setEdit({...edit,amount:maskCurrency(e.target.value)})} required /></label><label className="flex gap-2"><input type="checkbox" checked={edit.extraReceived} onChange={e=>setEdit({...edit,extraReceived:e.target.checked})} />Comissão por fora já recebida</label><label className="flex gap-2"><input type="checkbox" checked={edit.partnerPaid} onChange={e=>setEdit({...edit,partnerPaid:e.target.checked})} />Comissão do parceiro já paga</label><label className="flex gap-2"><input type="checkbox" checked={edit.received} onChange={e=>setEdit({...edit,received:e.target.checked})} />Já entrou no caixa</label><div className="flex gap-3"><button disabled={busy} className="bg-[#FDCA01] rounded-lg font-bold px-4 py-2">{busy?'Salvando…':'Salvar comissão'}</button><button type="button" disabled={busy} onClick={()=>setEdit(null)}>Cancelar</button></div></form>}
         </>}
         </>}
       </>}
@@ -565,6 +603,22 @@ function appendCommissionClosing(doc,y,report,layout) {
   return y;
 }
 
+function useAppViewportAndScrollLock(locked){
+  useEffect(()=>{
+    const viewport=window.visualViewport;
+    const update=()=>{document.documentElement.style.setProperty('--app-visible-height',`${viewport?.height || window.innerHeight}px`);document.documentElement.style.setProperty('--app-visible-top',`${viewport?.offsetTop || 0}px`);};
+    update();window.addEventListener('resize',update);viewport?.addEventListener('resize',update);viewport?.addEventListener('scroll',update);
+    return()=>{window.removeEventListener('resize',update);viewport?.removeEventListener('resize',update);viewport?.removeEventListener('scroll',update);};
+  },[]);
+  useEffect(()=>{
+    if(!locked)return;
+    const body=document.body,scrollY=window.scrollY;
+    const previous={position:body.style.position,top:body.style.top,width:body.style.width,overflow:body.style.overflow};
+    body.style.position='fixed';body.style.top=`-${scrollY}px`;body.style.width='100%';body.style.overflow='hidden';
+    return()=>{Object.assign(body.style,previous);window.scrollTo({top:scrollY,left:0,behavior:'instant'});};
+  },[locked]);
+}
+
 function CreditiProducao() {
   const [commissionPdfRequested,setCommissionPdfRequested] = useState(false);
   const [commissionOpen, setCommissionOpen] = useState(false);
@@ -580,6 +634,7 @@ function CreditiProducao() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  useAppViewportAndScrollLock(commissionOpen || modalOpen);
   const [editingRecord, setEditingRecord] = useState(null);
   const [form, setForm] = useState(CAMPOS_VAZIOS);
   const [newSellerName, setNewSellerName] = useState("");
@@ -1003,7 +1058,7 @@ function CreditiProducao() {
       {commissionOpen && <CommissionVault year={year} monthIdx={monthIdx} yearData={yearData} sellers={sellers} onClose={() => {setCommissionOpen(false);setCommissionPdfRequested(false);}} exportRequested={commissionPdfRequested} initialTab={commissionInitialTab} onExport={(values,expenses)=>generatePDF("mes",values,expenses)} onExportExpenses={expenses=>generatePDF("despesas",null,expenses)} availableYears={availableYears} recordsReady={dataReady && sellersReady && !loading} onSelectMonth={setMonthIdx} onSelectYear={next=>{setAvailableYears(current=>current.includes(next)?current:[...current,next].sort((a,b)=>a-b));setYear(next);}} />}
       {/* ===== Top bar ===== */}
       <header className="sticky top-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-b border-[#EFE2A8]">
-        <div className="max-w-[860px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+        <div className="app-header-row max-w-[860px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <img src={`data:image/png;base64,${LOGO_B64}`} alt="Crediti" className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex-shrink-0" />
             <div className="min-w-0">
@@ -1025,7 +1080,7 @@ function CreditiProducao() {
         </div>
       </header>
 
-      <div className="max-w-[860px] mx-auto px-4 sm:px-6 pt-3 flex flex-wrap gap-2"><button onClick={() => {setCommissionInitialTab('commissions');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Comissão Crediti · valores ocultos</button><button onClick={()=>{setCommissionInitialTab('expenses');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Despesas Crediti · valores ocultos</button></div>
+      <div className="private-shortcuts max-w-[860px] mx-auto px-4 sm:px-6 pt-3 flex flex-wrap gap-2"><button onClick={() => {setCommissionInitialTab('commissions');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Comissão Crediti · valores ocultos</button><button onClick={()=>{setCommissionInitialTab('expenses');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Despesas Crediti · valores ocultos</button></div>
       {error && (
         <div className="bg-[#FBE4E1] text-[#A3271E] text-[13px] px-4 sm:px-6 py-2.5 flex items-center gap-2 border-b border-[#f0c4bf]">
           <AlertCircle size={15} className="flex-shrink-0" />
@@ -1078,7 +1133,7 @@ function CreditiProducao() {
             {/* Month picker */}
             <div className="flex items-center gap-2 mb-6">
               <button onClick={() => setMonthIdx(i => (i + 11) % 12)} className="w-8 h-8 rounded-full bg-white border border-[#E7DDAE] flex items-center justify-center text-[#8A7A1F] hover:bg-[#FFF1B8] transition flex-shrink-0"><ChevronLeft size={15} /></button>
-              <div className="flex gap-1.5 overflow-x-auto flex-1">
+              <div className="month-tabs flex gap-1.5 overflow-x-auto flex-1">
                 {MESES.map((m, i) => (
                   <button key={m} onClick={() => setMonthIdx(i)}
                     className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold transition ${monthIdx === i ? "bg-[#17160F] text-[#FFD447]" : "bg-white text-[#7A7154] border border-[#E7DDAE] hover:bg-[#FFF1B8]"}`}>
@@ -1159,7 +1214,7 @@ function CreditiProducao() {
                 <div className="px-4 py-3">
                   {addingSeller ? (
                     <div className="flex items-center gap-1.5">
-                      <input autoFocus value={newSellerName} onChange={e => setNewSellerName(e.target.value)}
+                      <input value={newSellerName} onChange={e => setNewSellerName(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter") addSeller(); if (e.key === "Escape") setAddingSeller(false); }}
                         placeholder="Nome do parceiro" list="crediti-partners" className="input flex-1" />
                       <datalist id="crediti-partners">{sellers.filter(s => !DEFAULT_SELLERS.some(f => f.id === s.id)).map(s => <option key={s.id} value={s.nome} />)}</datalist>
@@ -1192,7 +1247,7 @@ function CreditiProducao() {
             </div>
 
             {/* Month chips */}
-            <div className="flex gap-1.5 overflow-x-auto mb-4 pb-0.5">
+            <div className="month-tabs flex gap-1.5 overflow-x-auto mb-4 pb-0.5">
               {MESES.map((m, i) => (
                 <button key={m} onClick={() => setMonthIdx(i)}
                   className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold transition ${monthIdx === i ? "bg-[#17160F] text-[#FFD447]" : "bg-white text-[#7A7154] border border-[#E7DDAE] hover:bg-[#FFF1B8]"}`}>
@@ -1202,13 +1257,13 @@ function CreditiProducao() {
             </div>
 
             {/* KPI strip */}
-            <div className="grid grid-cols-3 gap-2.5 mb-5">
+            <div className="mobile-stats grid grid-cols-3 gap-2.5 mb-5">
               <StatCard label="Produção" value={formatBRL(activeSellerTotals.valorVenda)} strong />
               <StatCard label="Com. por fora" value={formatBRL(activeSellerTotals.comissaoExtra)} />
               <StatCard label="Com. parceiro" value={formatBRL(activeSellerTotals.comissaoParceiro)} />
             </div>
 
-            <div className="flex items-center justify-between mb-2 px-0.5 gap-2">
+            <div className="record-actions flex items-center justify-between mb-2 px-0.5 gap-2">
               <div className="text-[11px] font-extrabold text-[#8A7A1F] uppercase tracking-wider">Extrato de vendas</div>
               <div className="flex items-center gap-2">
                 <button onClick={() => generatePDF("vendedor")} className="flex items-center gap-1.5 bg-white border border-[#E7DDAE] text-[#17160F] text-[12.5px] font-bold px-3 py-2 rounded-lg hover:bg-[#FFF1B8] transition">
@@ -1307,7 +1362,7 @@ function CreditiProducao() {
             </div>
             <div className="h-1"></div>
 
-            <div className="flex gap-1.5 overflow-x-auto mb-5 pb-0.5">
+            <div className="month-tabs flex gap-1.5 overflow-x-auto mb-5 pb-0.5">
               {MESES.map((m, i) => (
                 <button key={m} onClick={() => setMonthIdx(i)}
                   className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold transition ${monthIdx === i ? "bg-[#17160F] text-[#FFD447]" : "bg-white text-[#7A7154] border border-[#E7DDAE] hover:bg-[#FFF1B8]"}`}>
@@ -1332,7 +1387,7 @@ function CreditiProducao() {
 
             <div className="bg-[#17160F] rounded-2xl p-4 sm:p-5">
               <div className="text-[10.5px] font-bold text-[#FFD447] uppercase tracking-wider mb-2">Total geral do mês</div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="mobile-stats grid grid-cols-3 gap-3">
                 <div>
                   <div className="text-[10px] text-white/40 uppercase tracking-wide mb-0.5">Produção</div>
                   <div className="num font-extrabold text-white text-[15px] sm:text-[17px]">{formatBRL(monthGrandTotal.valorVenda)}</div>
@@ -1352,7 +1407,7 @@ function CreditiProducao() {
       </div>
 
       {/* ===== Bottom nav (mobile, bank-app style) ===== */}
-      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-t border-[#EFE2A8] flex items-stretch">
+      <nav className="app-bottom-nav sm:hidden fixed bottom-0 inset-x-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-t border-[#EFE2A8] flex items-stretch">
         <NavBtn icon={<Home size={18} />} label="Início" active={screen === "home"} onClick={() => setScreen("home")} />
         <NavBtn icon={<LayoutList size={18} />} label="Extrato" active={screen === "seller"} onClick={() => { if (activeSellerId) setScreen("seller"); else if (sellers[0]) goToSeller(sellers[0].id); }} />
         <NavBtn icon={<PiggyBank size={18} />} label="Resumo" active={screen === "resumo"} onClick={() => setScreen("resumo")} />
@@ -1360,8 +1415,8 @@ function CreditiProducao() {
 
       {/* ===== Modal ===== */}
       {modalOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50" onClick={() => setModalOpen(false)}>
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="app-overlay fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50" onClick={() => setModalOpen(false)}>
+          <div className="modal-panel bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="px-5 py-4 border-b border-[#F0EAC8] flex items-center justify-between sticky top-0 bg-white z-10">
               <div className="font-extrabold text-[15px] text-[#17160F]">{editingRecord ? "Editar lançamento" : "Novo lançamento"} — {activeSeller?.nome}</div>
               <button onClick={() => setModalOpen(false)} className="w-8 h-8 rounded-full hover:bg-[#F5EDCB] flex items-center justify-center"><X size={16} /></button>
@@ -1392,7 +1447,7 @@ function CreditiProducao() {
               </div>
               <Field label="Telefone é de quem? (se não for do cliente)"><input value={form.telefoneTitular} onChange={e => setForm({ ...form, telefoneTitular: e.target.value })} className="input" placeholder="Ex: filha — Maria" /></Field>
               <Field label="Produto"><input value={form.produto} onChange={e => setForm({ ...form, produto: e.target.value })} className="input" placeholder="Ex: Consignado INSS" /></Field>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="mobile-stats grid grid-cols-3 gap-3">
                 <Field label="Valor da venda"><input value={form.valorVenda} onChange={e => setForm({ ...form, valorVenda: maskCurrency(e.target.value) })} className="input" placeholder="R$ 0,00" inputMode="numeric" /></Field>
                 <Field label="Com. por fora"><input value={form.comissaoExtra} onChange={e => setForm({ ...form, comissaoExtra: maskCurrency(e.target.value) })} className="input" placeholder="R$ 0,00" inputMode="numeric" /></Field>
                 <Field label="Com. parceiro"><input value={form.comissaoParceiro} onChange={e => setForm({ ...form, comissaoParceiro: maskCurrency(e.target.value) })} className="input" placeholder="R$ 0,00" inputMode="numeric" /></Field>
@@ -1469,6 +1524,7 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
 
