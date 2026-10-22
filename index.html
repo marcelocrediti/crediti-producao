@@ -424,7 +424,7 @@ function appendExpenseClosing(doc,y,ledger,layout,report){
   const items=ledger.items.filter(item=>!item.deletedAt).sort((a,b)=>a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''))||a.name.localeCompare(b.name));
   const total=expenseTotalCents(ledger);
   y=table(doc,y,['Data','Nome da despesa','Valor'],items.map(item=>[item.date,item.name,formatBRL(item.cents/100)]),['','TOTAL DAS DESPESAS DO MÊS',formatBRL(total/100)]);
-  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],['(-) Despesas Crediti',formatBRL(total/100)]],['SALDO APÓS DESPESAS',formatBRL((report.balance-total)/100)]);}
+  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],['(-) Despesas diversas',formatBRL(total/100)],['Saldo após despesas',formatBRL((report.balance-total)/100)]],['SALDO NO CAIXA',formatBRL(report.creditiReceived/100)]);}
   return y;
 }
 
@@ -532,9 +532,10 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
           <section className="border border-[#E7DDAE] rounded-xl p-4 mb-4" aria-label="Resumo do mês">
             <h3 className="font-extrabold text-lg mb-3">Resumo do mês</h3>
             <dl className="space-y-3">
-              {[['Saldo no caixa',closing.creditiReceived],['Recebido da promotora',closing.promoterReceived],['Recebido por fora',closing.extraReceived],['Comissão paga ao parceiro',closing.partnerPaid],['Comissão da Crediti',closing.crediti]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
-              <div className="flex justify-between gap-3"><dt>(−) Despesas Crediti</dt><dd className="font-bold text-right">{expenseLedger.ready?formatBRL(expenseTotalCents(expenseLedger.data)/100):'Carregando…'}</dd></div>
+              {[['Recebido da promotora',closing.promoterReceived],['Recebido por fora',closing.extraReceived],['Comissão paga ao parceiro',closing.partnerPaid],['Comissão da Crediti',closing.crediti]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
+              <div className="flex justify-between gap-3"><dt>(−) Despesas diversas</dt><dd className="font-bold text-right">{expenseLedger.ready?formatBRL(expenseTotalCents(expenseLedger.data)/100):'Carregando…'}</dd></div>
               <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{expenseLedger.ready?formatBRL((closing.balance-expenseTotalCents(expenseLedger.data))/100):'Carregando…'}</dd></div>
+              <div className="flex justify-between gap-3 font-bold"><dt>Saldo no caixa</dt><dd className="text-right">{formatBRL(closing.creditiReceived/100)}</dd></div>
             </dl>
             {expenseLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as despesas. Abra Despesas Crediti para tentar novamente.</p>}
             <p className="text-sm mt-3">Comissão Crediti que você marcou como recebida em {MESES[monthIdx]} / {year}, já descontado o parceiro.</p>
