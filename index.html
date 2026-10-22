@@ -300,6 +300,16 @@ function sameCommissionPayload(a,b) {
 }
 function emptyExpenseLedger(){return {items:[],closed:false};}
 function expenseTotalCents(ledger){return ledger.items.filter(item=>!item.deletedAt).reduce((sum,item)=>sum+item.cents,0);}
+function expenseNature(item){return item.nature==='crediti'||item.nature==='diversas'?item.nature:'unclassified';}
+function expenseNatureLabel(item){return {crediti:'Crediti',diversas:'Diversas',unclassified:'Sem natureza'}[expenseNature(item)];}
+function expenseNatureGroups(ledger){
+  const items=ledger.items.filter(item=>!item.deletedAt);
+  return ['crediti','diversas',...(items.some(item=>expenseNature(item)==='unclassified')?['unclassified']:[])].map(nature=>{
+    const list=items.filter(item=>expenseNature(item)===nature).sort((a,b)=>a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''))||a.name.localeCompare(b.name));
+    return {nature,label:expenseNatureLabel({nature}),items:list,total:list.reduce((sum,item)=>sum+item.cents,0)};
+  });
+}
+
 function validateExpenseDraft(draft,year,monthIdx){
   const match=String(draft.date || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if(!match)throw new Error('Informe a data no formato DD/MM/AAAA.');
@@ -310,9 +320,10 @@ function validateExpenseDraft(draft,year,monthIdx){
   if(!name)throw new Error('Informe o nome da despesa.');
   const cents=Math.round(parseNum(draft.amount)*100);
   if(!Number.isSafeInteger(cents)||cents<=0)throw new Error('Informe um valor de despesa maior que zero.');
-  return {id:draft.id,date:draft.date,name,cents};
+  if(!['crediti','diversas'].includes(draft.nature))throw new Error('Escolha a natureza da despesa: Crediti ou Diversas.');
+  return {id:draft.id,date:draft.date,name,cents,nature:draft.nature};
 }
-function sameExpenseItem(a,b){return Boolean(a&&b)&&a.id===b.id&&a.date===b.date&&a.name===b.name&&a.cents===b.cents&&Boolean(a.deletedAt)===Boolean(b.deletedAt);}
+function sameExpenseItem(a,b){return Boolean(a&&b)&&a.id===b.id&&a.date===b.date&&a.name===b.name&&a.cents===b.cents&&expenseNature(a)===expenseNature(b)&&Boolean(a.deletedAt)===Boolean(b.deletedAt);}
 function applyExpenseOperation(current,operation){
   const next={...current,items:current.items.map(item=>({...item}))};
   if(operation.type==='reopen')return {...next,closed:false,reopenedAt:operation.at};
@@ -347,7 +358,7 @@ function useExpenseLedger(key,year,monthIdx){
         const payload=snap.exists?snap.data().payload:null;
         const data=payload?JSON.parse(await vaultDecrypt(key,payload,context)):emptyExpenseLedger();
         if(snap.exists&&!payload)throw new Error('invalid');
-        if(!Array.isArray(data.items)||typeof data.closed!=='boolean'||data.items.some(item=>!item.id||!Number.isSafeInteger(item.cents)||item.cents<=0||typeof item.name!=='string'||typeof item.date!=='string'))throw new Error('invalid');
+        if(!Array.isArray(data.items)||typeof data.closed!=='boolean'||data.items.some(item=>!item.id||!Number.isSafeInteger(item.cents)||item.cents<=0||typeof item.name!=='string'||typeof item.date!=='string'||(item.nature!=null&&!['crediti','diversas'].includes(item.nature))))throw new Error('invalid');
         if(active&&version===revision){setSnapshot({scope,data,payload,confirmed:!snap.metadata?.fromCache&&!snap.metadata?.hasPendingWrites});setError('');}
       }catch(e){if(active&&version===revision){setSnapshot(null);setError('Não foi possível abrir as despesas. Os dados existentes foram preservados.');}}
     },()=>{if(active){setSnapshot(null);setError('Não foi possível carregar as despesas. Confira a conexão.');}});
@@ -387,17 +398,19 @@ function PrivateExpenses({ledger,year,monthIdx,onEditingChange,onExport}){
   const disabled=ledger.busy||!ledger.ready||exporting;
   function newExpense(){
     const now=new Date(),day=now.getFullYear()===year&&now.getMonth()===monthIdx?now.getDate():1;
-    setNotice('');setDraft({id:uid(),date:`${String(day).padStart(2,'0')}/${String(monthIdx+1).padStart(2,'0')}/${year}`,name:'',amount:'',original:null});
+    setNotice('');setDraft({id:uid(),date:`${String(day).padStart(2,'0')}/${String(monthIdx+1).padStart(2,'0')}/${year}`,name:'',amount:'',nature:'',original:null});
   }
   async function save(event){
     event.preventDefault();setNotice('');
     try{const item=validateExpenseDraft(draft,year,monthIdx);if(await ledger.mutate({type:draft.original?'edit':'add',item,original:draft.original})){setDraft(null);setNotice('Despesa salva.');}}
     catch(e){setNotice(e.message);}
   }
-  return <section aria-label="Despesas Crediti" className="space-y-4">
-    <div className="flex flex-wrap gap-3 items-center justify-between"><h3 className="font-extrabold text-lg">Despesas Crediti</h3><span className="font-bold text-sm border rounded-lg px-3 py-2">{ledger.data.closed?'Competência fechada':'Competência aberta'}</span></div>
+  return <section aria-label="Despesas" className="space-y-4">
+    <div className="flex flex-wrap gap-3 items-center justify-between"><h3 className="font-extrabold text-lg">Despesas</h3><span className="font-bold text-sm border rounded-lg px-3 py-2">{ledger.data.closed?'Competência fechada':'Competência aberta'}</span></div>
     {!ledger.ready?<p role="status">{ledger.error || 'Carregando despesas e confirmando conexão…'}</p>:<>
       <StatCard label={`Total de despesas de ${MESES[monthIdx]} / ${year}`} value={formatBRL(expenseTotalCents(ledger.data)/100)} strong />
+      <div className="grid sm:grid-cols-2 gap-3">{expenseNatureGroups(ledger.data).map(group=><StatCard key={group.nature} label={`Despesas · ${group.label}`} value={formatBRL(group.total/100)} />)}</div>
+      {items.some(item=>expenseNature(item)==='unclassified')&&<p className="text-sm">Escolha a natureza das despesas antigas em Editar. Os valores continuam incluídos no total.</p>}
       <div className="flex flex-wrap gap-2">
         {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} onClick={newExpense} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50">+ Nova despesa</button>}
         <button type="button" disabled={disabled||Boolean(draft)} onClick={async()=>{setNotice('');if(await ledger.mutate({type:ledger.data.closed?'reopen':'close'}))setNotice(ledger.data.closed?'Competência reaberta para edição.':'Competência fechada. As despesas continuam disponíveis para consulta e PDF.');}} className="border rounded-lg px-3 py-2 font-bold disabled:opacity-50">{ledger.data.closed?'Reabrir competência':'Fechar competência'}</button>
@@ -405,13 +418,14 @@ function PrivateExpenses({ledger,year,monthIdx,onEditingChange,onExport}){
       </div>
       {draft&&<form ref={expenseForm} onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 space-y-3">
         <label className="block text-sm font-bold">Data<input aria-label="Data da despesa" className="input mt-1" inputMode="numeric" value={draft.date} onChange={e=>setDraft({...draft,date:maskDateInput(e.target.value)})} placeholder="DD/MM/AAAA" required /></label>
+        <label className="block text-sm font-bold">Natureza da despesa<select aria-label="Natureza da despesa" className="input mt-1" value={draft.nature||''} onChange={e=>setDraft({...draft,nature:e.target.value})} required><option value="" disabled>Escolha a natureza</option><option value="crediti">Crediti</option><option value="diversas">Diversas</option></select></label>
         <label className="block text-sm font-bold">Nome da despesa<input aria-label="Nome da despesa" className="input mt-1 uppercase" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value.toLocaleUpperCase('pt-BR')})} placeholder="EX.: ALUGUEL DO ESCRITÓRIO" required /></label>
         <label className="block text-sm font-bold">Valor da despesa<input aria-label="Valor da despesa" className="input mt-1" inputMode="decimal" value={draft.amount} onChange={e=>setDraft({...draft,amount:maskCurrency(e.target.value)})} placeholder="R$ 00.000,00" required /></label>
         <div className="flex gap-3"><button disabled={disabled||ledger.data.closed} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50">{ledger.busy?'Salvando…':'Salvar despesa'}</button><button type="button" disabled={ledger.busy} onClick={()=>setDraft(null)}>Cancelar</button></div>
       </form>}
       {!items.length&&<p>Nenhuma despesa lançada nesta competência.</p>}
-      {items.map(item=><div key={item.id} className="border rounded-xl p-3"><div className="flex justify-between gap-3"><div className="min-w-0"><div className="font-bold break-words">{item.name}</div><div className="text-sm">{item.date}</div></div><b className="whitespace-nowrap">{formatBRL(item.cents/100)}</b></div>{!ledger.data.closed&&<div className="flex gap-4 mt-2 text-sm"><button type="button" disabled={disabled||Boolean(draft)} className="font-bold underline" onClick={()=>{setNotice('');setDraft({...item,amount:formatBRL(item.cents/100),original:{...item}});}}>Editar</button><button type="button" disabled={disabled||Boolean(draft)} className="underline" onClick={async()=>{if(await ledger.mutate({type:'delete',item,original:item}))setNotice('Despesa excluída. Você pode restaurá-la abaixo.');}}>Excluir</button></div>}</div>)}
-      {!!removed.length&&<details><summary className="text-sm">Despesas excluídas ({removed.length})</summary>{removed.map(item=><div key={item.id} className="text-sm border rounded-lg p-2 mt-2">{item.date} · {item.name} · {formatBRL(item.cents/100)} {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} className="underline font-bold ml-2" onClick={()=>ledger.mutate({type:'restore',item,original:item})}>Restaurar</button>}</div>)}</details>}
+      {items.map(item=><div key={item.id} className="border rounded-xl p-3"><div className="flex justify-between gap-3"><div className="min-w-0"><div className="font-bold break-words">{item.name}</div><div className="text-sm">{item.date} · Natureza: <b>{expenseNatureLabel(item)}</b></div></div><b className="whitespace-nowrap">{formatBRL(item.cents/100)}</b></div>{!ledger.data.closed&&<div className="flex gap-4 mt-2 text-sm"><button type="button" disabled={disabled||Boolean(draft)} className="font-bold underline" onClick={()=>{setNotice('');setDraft({...item,nature:item.nature||'',amount:formatBRL(item.cents/100),original:{...item}});}}>Editar</button><button type="button" disabled={disabled||Boolean(draft)} className="underline" onClick={async()=>{if(await ledger.mutate({type:'delete',item,original:item}))setNotice('Despesa excluída. Você pode restaurá-la abaixo.');}}>Excluir</button></div>}</div>)}
+      {!!removed.length&&<details><summary className="text-sm">Despesas excluídas ({removed.length})</summary>{removed.map(item=><div key={item.id} className="text-sm border rounded-lg p-2 mt-2">{item.date} · {item.name} · {expenseNatureLabel(item)} · {formatBRL(item.cents/100)} {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} className="underline font-bold ml-2" onClick={()=>ledger.mutate({type:'restore',item,original:item})}>Restaurar</button>}</div>)}</details>}
       <div className="font-extrabold border-t pt-3 flex justify-between gap-3"><span>TOTAL DA COMPETÊNCIA</span><span>{formatBRL(expenseTotalCents(ledger.data)/100)}</span></div>
     </>}
     {(notice||ledger.error)&&<p role="status" className="font-bold text-sm">{ledger.error||notice}</p>}
@@ -420,11 +434,13 @@ function PrivateExpenses({ledger,year,monthIdx,onEditingChange,onExport}){
 function appendExpenseClosing(doc,y,ledger,layout,report){
   const {letterhead,section,table}=layout;
   if(y>doc.internal.pageSize.getHeight()-180){doc.addPage();y=letterhead(doc);}
-  y=section(doc,'DESPESAS CREDITI - '+(ledger.closed?'COMPETÊNCIA FECHADA':'COMPETÊNCIA ABERTA'),y);
+  y=section(doc,'DESPESAS - '+(ledger.closed?'COMPETÊNCIA FECHADA':'COMPETÊNCIA ABERTA'),y);
   const items=ledger.items.filter(item=>!item.deletedAt).sort((a,b)=>a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''))||a.name.localeCompare(b.name));
   const total=expenseTotalCents(ledger);
-  y=table(doc,y,['Data','Nome da despesa','Valor'],items.map(item=>[item.date,item.name,formatBRL(item.cents/100)]),['','TOTAL DAS DESPESAS DO MÊS',formatBRL(total/100)]);
-  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],['(-) Despesas diversas',formatBRL(total/100)],['Saldo após despesas',formatBRL((report.balance-total)/100)]],['SALDO NO CAIXA',formatBRL(report.creditiReceived/100)]);}
+  y=table(doc,y,['Data','Nome da despesa','Natureza','Valor'],items.map(item=>[item.date,item.name,expenseNatureLabel(item),formatBRL(item.cents/100)]),['','TOTAL DAS DESPESAS DO MÊS','',formatBRL(total/100)]);
+  if(y>doc.internal.pageSize.getHeight()-160){doc.addPage();y=letterhead(doc);}
+  y=table(doc,y,['Despesas por natureza','Valor'],expenseNatureGroups(ledger).map(group=>[group.label,formatBRL(group.total/100)]),['TOTAL DAS DESPESAS',formatBRL(total/100)]);
+  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],...expenseNatureGroups(ledger).map(group=>['(-) Despesas · '+group.label,formatBRL(group.total/100)]),['Saldo após despesas',formatBRL((report.balance-total)/100)]],['SALDO NO CAIXA',formatBRL(report.creditiReceived/100)]);}
   return y;
 }
 
@@ -514,9 +530,9 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   }
   return <div className="app-overlay fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Área privada Crediti">
     <div ref={commissionPanel} className="modal-panel bg-white rounded-2xl p-5 w-full max-w-3xl overflow-y-auto">
-      <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">{activeTab==='expenses'?'Despesas Crediti':'Comissão Crediti'}</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
+      <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">{activeTab==='expenses'?'Despesas':'Comissão Crediti'}</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
       {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para acessar as comissões e despesas da Crediti.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
-        <div className="flex flex-wrap gap-2 mb-4" role="group" aria-label="Áreas privadas"><button type="button" aria-pressed={activeTab==='commissions'} disabled={historyBusy} onClick={()=>setActiveTab('commissions')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='commissions'?'bg-[#FDCA01]':''}`}>Comissões Crediti</button><button type="button" aria-pressed={activeTab==='expenses'} disabled={historyBusy} onClick={()=>setActiveTab('expenses')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='expenses'?'bg-[#FDCA01]':''}`}>Despesas Crediti</button></div>
+        <div className="flex flex-wrap gap-2 mb-4" role="group" aria-label="Áreas privadas"><button type="button" aria-pressed={activeTab==='commissions'} disabled={historyBusy} onClick={()=>setActiveTab('commissions')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='commissions'?'bg-[#FDCA01]':''}`}>Comissões Crediti</button><button type="button" aria-pressed={activeTab==='expenses'} disabled={historyBusy} onClick={()=>setActiveTab('expenses')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='expenses'?'bg-[#FDCA01]':''}`}>Despesas</button></div>
         <section className="border border-[#E7DDAE] rounded-xl p-3 mb-4" aria-label="Histórico por competência">
           <div className="flex flex-wrap gap-3 items-center justify-between mb-3"><h3 className="font-bold">Histórico por competência</h3><label className="flex items-center gap-2 text-sm">Ano<select aria-label="Ano do histórico" className="border rounded-lg px-3 py-2" value={year} disabled={historyBusy} onChange={e=>selectHistoryYear(Number(e.target.value))}>{historyYears.map(y=><option key={y} value={y}>{y}</option>)}</select></label></div>
           <div className="history-months grid grid-cols-3 sm:grid-cols-4 gap-2">{MESES.map((name,index)=>{const count=Object.values(yearData[index] || {}).reduce((sum,list)=>sum+(Array.isArray(list)?list.filter(r=>!r.deletedAt).length:0),0);return <button key={index} type="button" aria-pressed={monthIdx===index} aria-label={`Consultar ${name} de ${year}`} disabled={historyBusy} onClick={()=>selectHistoryMonth(index)} className={`text-left border rounded-lg p-2 disabled:opacity-50 ${monthIdx===index?'bg-[#FDCA01] border-[#D9A400]':'bg-white border-[#E7DDAE]'}`}><span className="block text-sm font-bold">{name}</span><span className="block text-xs">{activeTab==='expenses'?(monthIdx===index&&expenseLedger.ready?`${expenseLedger.data.items.filter(item=>!item.deletedAt).length} despesa(s)`:'Consultar despesas'):(recordsReady?(count?`${count} proposta(s)`:'Sem lançamentos'):'Carregando…')}</span></button>})}</div>
@@ -533,11 +549,12 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
             <h3 className="font-extrabold text-lg mb-3">Resumo do mês</h3>
             <dl className="space-y-3">
               {[['Recebido da promotora',closing.promoterReceived],['Recebido por fora',closing.extraReceived],['Comissão paga ao parceiro',closing.partnerPaid],['Comissão da Crediti',closing.crediti]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
-              <div className="flex justify-between gap-3"><dt>(−) Despesas diversas</dt><dd className="font-bold text-right">{expenseLedger.ready?formatBRL(expenseTotalCents(expenseLedger.data)/100):'Carregando…'}</dd></div>
+              {expenseLedger.ready?expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="flex justify-between gap-3"><dt>(−) Despesas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(−) Despesas</dt><dd>Carregando…</dd></div>}
               <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{expenseLedger.ready?formatBRL((closing.balance-expenseTotalCents(expenseLedger.data))/100):'Carregando…'}</dd></div>
               <div className="flex justify-between gap-3 font-bold"><dt>Saldo no caixa</dt><dd className="text-right">{formatBRL(closing.creditiReceived/100)}</dd></div>
             </dl>
-            {expenseLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as despesas. Abra Despesas Crediti para tentar novamente.</p>}
+            {expenseLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Despesas por natureza"><h4 className="font-bold mb-2">Despesas por natureza</h4><div className="space-y-3">{expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma despesa.</p>}</div>)}</div></section>}
+            {expenseLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as despesas. Abra Despesas para tentar novamente.</p>}
             <p className="text-sm mt-3">Comissão Crediti que você marcou como recebida em {MESES[monthIdx]} / {year}, já descontado o parceiro.</p>
             {closing.extraPending>0&&<p className="text-sm mt-2">Por fora ainda a receber: <b>{formatBRL(closing.extraPending/100)}</b>. Confira o recebimento na ficha do cliente.</p>}
           </section>
@@ -775,7 +792,7 @@ function CreditiProducao() {
 
       else if(type==='despesas' && expenseData){
         let y=pdfLetterhead(doc);
-        y=pdfTitle(doc,`Despesas Crediti - ${MESES[monthIdx]} / ${year}`,y);
+        y=pdfTitle(doc,`Despesas - ${MESES[monthIdx]} / ${year}`,y);
         appendExpenseClosing(doc,y,expenseData,{letterhead:pdfLetterhead,section:pdfSectionLabel,table:pdfTable});
         doc.save(`despesas-crediti-${safeFileBit(MESES[monthIdx])}-${year}.pdf`);
       }
@@ -1101,7 +1118,7 @@ function CreditiProducao() {
         </div>
       </header>
 
-      <div className="private-shortcuts max-w-[860px] mx-auto px-4 sm:px-6 pt-3 flex flex-wrap gap-2"><button onClick={() => {setCommissionInitialTab('commissions');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Comissão Crediti · valores ocultos</button><button onClick={()=>{setCommissionInitialTab('expenses');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Despesas Crediti · valores ocultos</button></div>
+      <div className="private-shortcuts max-w-[860px] mx-auto px-4 sm:px-6 pt-3 flex flex-wrap gap-2"><button onClick={() => {setCommissionInitialTab('commissions');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Comissão Crediti · valores ocultos</button><button onClick={()=>{setCommissionInitialTab('expenses');setCommissionPdfRequested(false);setCommissionOpen(true);}} className="bg-white border border-[#E7DDAE] rounded-lg px-3 py-2 text-sm font-bold">🔒 Despesas · valores ocultos</button></div>
       {error && (
         <div className="bg-[#FBE4E1] text-[#A3271E] text-[13px] px-4 sm:px-6 py-2.5 flex items-center gap-2 border-b border-[#f0c4bf]">
           <AlertCircle size={15} className="flex-shrink-0" />
@@ -1545,6 +1562,7 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
 
