@@ -424,7 +424,7 @@ function appendExpenseClosing(doc,y,ledger,layout,report){
   const items=ledger.items.filter(item=>!item.deletedAt).sort((a,b)=>a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''))||a.name.localeCompare(b.name));
   const total=expenseTotalCents(ledger);
   y=table(doc,y,['Data','Nome da despesa','Valor'],items.map(item=>[item.date,item.name,formatBRL(item.cents/100)]),['','TOTAL DAS DESPESAS DO MÊS',formatBRL(total/100)]);
-  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Sobrou antes das despesas',formatBRL(report.balance/100)],['(-) Despesas Crediti',formatBRL(total/100)]],['SOBROU PARA A CREDITI',formatBRL((report.balance-total)/100)]);}
+  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],['(-) Despesas Crediti',formatBRL(total/100)]],['SALDO APÓS DESPESAS',formatBRL((report.balance-total)/100)]);}
   return y;
 }
 
@@ -528,25 +528,26 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
         {activeTab==='commissions'&&<>
         <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Confira o resumo e use a busca para lançar ou editar a comissão de um cliente.</p>
         {!historyReady ? <p>Carregando a competência {MESES[monthIdx]} / {year}…</p> : <>
-          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)||!expenseLedger.ready||expenseLedger.busy} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values,expenseLedger.data);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':`Gerar PDF de ${MESES[monthIdx]} / ${year}`} </button><p className="text-sm mt-2">O PDF mostra as entradas, os pagamentos aos parceiros e as despesas do mês.</p></div>
+          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)||!expenseLedger.ready||expenseLedger.busy} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values,expenseLedger.data);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':`Gerar PDF de ${MESES[monthIdx]} / ${year}`} </button><p className="text-sm mt-2">O PDF mostra o caixa confirmado por você, as despesas e o saldo final.</p></div>
           <section className="border border-[#E7DDAE] rounded-xl p-4 mb-4" aria-label="Resumo do mês">
             <h3 className="font-extrabold text-lg mb-3">Resumo do mês</h3>
             <dl className="space-y-3">
-              {[['Recebido da promotora',closing.promoterReceived],['(+) Recebido por fora',closing.extraReceived],['Total que entrou',closing.income],['(−) Pago aos parceiros',closing.partnerPaid],['Sobrou antes das despesas',closing.balance]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
+              {[['Entrou no caixa',closing.creditiReceived]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
               <div className="flex justify-between gap-3"><dt>(−) Despesas Crediti</dt><dd className="font-bold text-right">{expenseLedger.ready?formatBRL(expenseTotalCents(expenseLedger.data)/100):'Carregando…'}</dd></div>
-              <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Sobrou para a Crediti</dt><dd className="text-right">{expenseLedger.ready?formatBRL((closing.balance-expenseTotalCents(expenseLedger.data))/100):'Carregando…'}</dd></div>
+              <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{expenseLedger.ready?formatBRL((closing.balance-expenseTotalCents(expenseLedger.data))/100):'Carregando…'}</dd></div>
             </dl>
             {expenseLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as despesas. Abra Despesas Crediti para tentar novamente.</p>}
-            <p className="text-sm mt-3">Valores recebidos das propostas de {MESES[monthIdx]} / {year}.</p>
-            {closing.extraPending>0&&<p className="text-sm mt-2">Por fora ainda a receber: <b>{formatBRL(closing.extraPending/100)}</b>. Esse valor só entra na conta quando for recebido.</p>}
+            <p className="text-sm mt-3">Comissão Crediti que você marcou como recebida em {MESES[monthIdx]} / {year}, já descontado o parceiro.</p>
+            {closing.extraPending>0&&<p className="text-sm mt-2">Por fora ainda a receber: <b>{formatBRL(closing.extraPending/100)}</b>. Confira o recebimento na ficha do cliente.</p>}
           </section>
           <details className="border rounded-xl p-3 mb-4"><summary className="font-bold cursor-pointer">Ver detalhes dos lançamentos</summary>
             <div className="space-y-2 text-sm mt-3">
+              <p>Recebido da promotora: <b>{formatBRL(closing.promoterReceived/100)}</b>. Pago aos parceiros: <b>{formatBRL(closing.partnerPaid/100)}</b>.</p>
               <p>Por fora: {formatBRL(closing.extraReceived/100)} recebidos e {formatBRL(closing.extraPending/100)} a receber. Total combinado: {formatBRL(closing.extraTotal/100)}.</p>
-              <p>Comissão Crediti preenchida por você: <b>{formatBRL(closing.crediti/100)}</b>. É o valor que você anotou para a empresa, já descontado o parceiro.</p>
+              <p>Comissão Crediti preenchida por você: <b>{formatBRL(closing.crediti/100)}</b>. Total das comissões líquidas preenchidas por você, já descontado o parceiro.</p>
               <p>Desses valores anotados: {formatBRL(closing.creditiReceived/100)} marcados como recebidos e {formatBRL(closing.creditiPending/100)} a receber.</p>
-              {closing.missing>0&&<p>Você ainda não preencheu a comissão Crediti de {closing.missing} proposta(s). Por isso, a soma anotada pode ser diferente do resumo acima.</p>}
-              <p>Essa anotação fica separada para não contar o mesmo dinheiro duas vezes.</p>
+              {closing.missing>0&&<p>Você ainda não preencheu a comissão Crediti de {closing.missing} proposta(s). Essas propostas só entram no caixa depois que você preencher o valor e marcar “Já entrou no caixa”.</p>}
+              <p>O caixa usa apenas os valores marcados como “Já entrou no caixa”. Promotora, por fora e parceiros aparecem abaixo para consulta e não alteram esse saldo.</p>
             </div>
           </details>
           <div className="mb-4"><label htmlFor="commission-name-search" className="block text-sm font-bold mb-1">Procurar por nome ou CPF</label><div className="flex gap-2"><input id="commission-name-search" type="search" className="input" placeholder="Digite o nome ou CPF do cliente" value={nameSearch} onChange={e=>setNameSearch(e.target.value)} />{nameSearch && <button type="button" className="border rounded-lg px-3 font-bold" onClick={()=>setNameSearch('')}>Limpar</button>}</div><p className="text-sm mt-1" role="status">{filteredCommissionRows.length} de {rows.length} proposta(s). Os totais acima são do mês inteiro.</p></div>
@@ -593,7 +594,9 @@ function monthlyCommissionReport(yearData, monthIdx, sellers, privateValues) {
   report.partnerTotal=report.partnerPaid+report.partnerPending;
   report.incomeRegistered=report.extraTotal+report.promoterReceived;
   report.income=report.extraReceived+report.promoterReceived;
-  report.balance=report.income-report.partnerPaid;
+  // O caixa usa somente a comissão líquida preenchida e confirmada pelo gestor.
+  // Parceiros já foram descontados desse valor; não descontar novamente.
+  report.balance=report.creditiReceived;
   return report;
 }
 function appendCommissionClosing(doc,y,report,layout) {
@@ -603,19 +606,16 @@ function appendCommissionClosing(doc,y,report,layout) {
   y=table(doc,y,['Parceiro / vendedor','Por fora recebido','Promotora recebida','Pago ao parceiro'],report.partners.map(p=>[p.name,formatBRL(p.extraReceived/100),formatBRL(p.promoterReceived/100),formatBRL(p.partnerPaid/100)]),['TOTAL',formatBRL(report.extraReceived/100),formatBRL(report.promoterReceived/100),formatBRL(report.partnerPaid/100)]);
   room(100);y=section(doc,'CONFERÊNCIA DE TODA A COMISSÃO POR FORA',y);
   y=table(doc,y,['Parceiro / vendedor','Total lançado','Recebido','A receber'],report.partners.map(p=>[p.name,formatBRL((p.extraReceived+p.extraPending)/100),formatBRL(p.extraReceived/100),formatBRL(p.extraPending/100)]),['TOTAL',formatBRL(report.extraTotal/100),formatBRL(report.extraReceived/100),formatBRL(report.extraPending/100)]);
-  room(250);y=section(doc,'RESUMO DO MÊS',y);
+  room(150);y=section(doc,'CAIXA DA CREDITI',y);
   y=table(doc,y,['Descrição','Valor'],[
-    ['Recebido da promotora',formatBRL(report.promoterReceived/100)],
-    ['(+) Recebido por fora',formatBRL(report.extraReceived/100)],
-    ['Total que entrou',formatBRL(report.income/100)],
-    ['(-) Pago aos parceiros',formatBRL(report.partnerPaid/100)]
-  ],['SOBROU ANTES DAS DESPESAS',formatBRL(report.balance/100)]);
-  room(190);y=section(doc,'ANOTAÇÕES DA COMISSÃO CREDITI',y);
-  y=table(doc,y,['Valores preenchidos por você','Valor'],[
-    ['Marcados como recebidos',formatBRL(report.creditiReceived/100)],
-    ['Marcados como a receber',formatBRL(report.creditiPending/100)]
-  ],['TOTAL ANOTADO',formatBRL(report.crediti/100)]);
-  const notes=[`Por fora ainda a receber: ${formatBRL(report.extraPending/100)}. Só entra no resumo quando recebido.`,...(report.missing?[`A comissão Crediti de ${report.missing} proposta(s) ainda não foi preenchida. A soma anotada pode ser diferente do resumo.`]:[]),'A comissão Crediti preenchida por você é uma anotação separada. Ela não é somada às entradas para não contar o mesmo dinheiro duas vezes.',`Valores das ${report.count} proposta(s) desta competência. As datas dos recebimentos podem ser de outro mês.`];
+    ['Comissão Crediti marcada como recebida',formatBRL(report.creditiReceived/100)]
+  ],['ENTROU NO CAIXA',formatBRL(report.creditiReceived/100)]);
+  room(190);y=section(doc,'DETALHES DOS LANÇAMENTOS',y);
+  y=table(doc,y,['Comissão Crediti preenchida por você','Valor'],[
+    ['Já entrou no caixa',formatBRL(report.creditiReceived/100)],
+    ['Ainda não entrou no caixa',formatBRL(report.creditiPending/100)]
+  ],['TOTAL PREENCHIDO',formatBRL(report.crediti/100)]);
+  const notes=['O caixa considera somente a comissão Crediti que você preencheu e marcou como recebida. O parceiro já está descontado desse valor.',`Por fora ainda a receber: ${formatBRL(report.extraPending/100)}. Confira o recebimento na ficha do cliente.`,...(report.missing?[`Falta preencher a comissão Crediti de ${report.missing} proposta(s). Elas só entram no caixa após preencher o valor e confirmar o recebimento.`]:[]),'Os totais de promotora, por fora e parceiros são apresentados para consulta. Não são somados ou descontados novamente do caixa.',`Valores das ${report.count} proposta(s) desta competência. As datas dos recebimentos podem ser de outro mês.`];
   for(const note of notes){doc.setFont('helvetica','normal');doc.setFontSize(8);const lines=doc.splitTextToSize(note,doc.internal.pageSize.getWidth()-80);room(lines.length*11+6);doc.text(lines,40,y);y+=lines.length*11+6;}
   return y;
 }
@@ -1541,6 +1541,7 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
 
