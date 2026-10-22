@@ -342,16 +342,17 @@ function applyExpenseOperation(current,operation){
   }
   return next;
 }
-function useExpenseLedger(key,year,monthIdx){
+function useExpenseLedger(key,year,monthIdx,resource='expenses'){
   const scope=`${year}-${String(monthIdx+1).padStart(2,'0')}`;
-  const context=`crediti-expenses-v1:${scope}`;
+  const context=`crediti-${resource}-v1:${scope}`;
+  const message=text=>resource==='receipts'?text.replaceAll('despesas','receitas').replaceAll('despesa','receita'):text;
   const [snapshot,setSnapshot]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const lock=React.useRef(false),mounted=React.useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   useEffect(()=>{
     if(!key)return;
     let active=true,revision=0;setSnapshot(null);setError('');
-    const stop=db.collection('crediti_storage').doc('__private_expenses_'+scope).onSnapshot({includeMetadataChanges:true},async snap=>{
+    const stop=db.collection('crediti_storage').doc('__private_'+resource+'_'+scope).onSnapshot({includeMetadataChanges:true},async snap=>{
       const version=++revision;
       if(active)setSnapshot(current=>current?.scope===scope?{...current,confirmed:false}:current);
       try{
@@ -359,19 +360,19 @@ function useExpenseLedger(key,year,monthIdx){
         const data=payload?JSON.parse(await vaultDecrypt(key,payload,context)):emptyExpenseLedger();
         if(snap.exists&&!payload)throw new Error('invalid');
         if(!Array.isArray(data.items)||typeof data.closed!=='boolean'||data.items.some(item=>!item.id||!Number.isSafeInteger(item.cents)||item.cents<=0||typeof item.name!=='string'||typeof item.date!=='string'||(item.nature!=null&&!['crediti','diversas'].includes(item.nature))))throw new Error('invalid');
-        if(active&&version===revision){setSnapshot({scope,data,payload,confirmed:!snap.metadata?.fromCache&&!snap.metadata?.hasPendingWrites});setError('');}
-      }catch(e){if(active&&version===revision){setSnapshot(null);setError('Não foi possível abrir as despesas. Os dados existentes foram preservados.');}}
-    },()=>{if(active){setSnapshot(null);setError('Não foi possível carregar as despesas. Confira a conexão.');}});
+        if(active&&version===revision){setSnapshot({scope,resource,data,payload,confirmed:!snap.metadata?.fromCache&&!snap.metadata?.hasPendingWrites});setError('');}
+      }catch(e){if(active&&version===revision){setSnapshot(null);setError(message('Não foi possível abrir as despesas. Os dados existentes foram preservados.'));}}
+    },()=>{if(active){setSnapshot(null);setError(message('Não foi possível carregar as despesas. Confira a conexão.'));}});
     return()=>{active=false;stop();};
-  },[key,scope]);
-  const ready=Boolean(key&&snapshot?.scope===scope&&snapshot.confirmed);
-  const data=snapshot?.scope===scope?snapshot.data:emptyExpenseLedger();
+  },[key,scope,resource]);
+  const ready=Boolean(key&&snapshot?.scope===scope&&snapshot.resource===resource&&snapshot.confirmed);
+  const data=snapshot?.scope===scope&&snapshot.resource===resource?snapshot.data:emptyExpenseLedger();
   async function mutate(operation){
     if(lock.current)return false;
-    if(!ready){setError('Aguarde a confirmação das despesas pelo banco antes de salvar.');return false;}
+    if(!ready){setError(message('Aguarde a confirmação das despesas pelo banco antes de salvar.'));return false;}
     lock.current=true;setBusy(true);setError('');
-    const ref=db.collection('crediti_storage').doc('__private_expenses_'+scope);
-    const backup=db.collection('crediti_storage').doc('__private_expenses_backup_'+scope+'_'+uid());
+    const ref=db.collection('crediti_storage').doc('__private_'+resource+'_'+scope);
+    const backup=db.collection('crediti_storage').doc('__private_'+resource+'_backup_'+scope+'_'+uid());
     try{
       await db.runTransaction(async tx=>{
         const snap=await tx.get(ref),payload=snap.exists?snap.data().payload:null;
@@ -383,7 +384,7 @@ function useExpenseLedger(key,year,monthIdx){
         tx.set(ref,{payload:encrypted,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
       });
       return true;
-    }catch(e){if(mounted.current)setError(e.message?.includes('competência')||e.message?.includes('aparelho')||e.message?.includes('despesa')?e.message:'Não foi possível salvar. Confira a conexão e tente novamente.');return false;}
+    }catch(e){if(mounted.current)setError(e.message?.includes('competência')||e.message?.includes('aparelho')||e.message?.includes('despesa')?message(e.message):'Não foi possível salvar. Confira a conexão e tente novamente.');return false;}
     finally{lock.current=false;if(mounted.current)setBusy(false);}
   }
   return {data,ready,busy,error,mutate,scope};
@@ -440,15 +441,91 @@ function appendExpenseClosing(doc,y,ledger,layout,report){
   y=table(doc,y,['Data','Nome da despesa','Natureza','Valor'],items.map(item=>[item.date,item.name,expenseNatureLabel(item),formatBRL(item.cents/100)]),['','TOTAL DAS DESPESAS DO MÊS','',formatBRL(total/100)]);
   if(y>doc.internal.pageSize.getHeight()-160){doc.addPage();y=letterhead(doc);}
   y=table(doc,y,['Despesas por natureza','Valor'],expenseNatureGroups(ledger).map(group=>[group.label,formatBRL(group.total/100)]),['TOTAL DAS DESPESAS',formatBRL(total/100)]);
-  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],...expenseNatureGroups(ledger).map(group=>['(-) Despesas · '+group.label,formatBRL(group.total/100)]),['Saldo após despesas',formatBRL((report.balance-total)/100)]],['SALDO NO CAIXA',formatBRL(report.creditiReceived/100)]);}
+  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],...expenseNatureGroups(ledger).map(group=>['(-) Despesas · '+group.label,formatBRL(group.total/100)]),['Saldo após despesas',formatBRL((report.balance-total)/100)]],['COMISSÃO CREDITI CONFIRMADA',formatBRL(report.creditiReceived/100)]);}
   return y;
 }
 
-function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, exportRequested, availableYears, onSelectYear, onSelectMonth, recordsReady, initialTab, onExportExpenses}) {
+function validateReceiptDraft(draft,year,monthIdx){
+  try{return validateExpenseDraft(draft,year,monthIdx);}catch(e){throw new Error(e.message.replaceAll('despesa','receita'));}
+}
+function monthlyCashReport(commissions,expenses,receipts){
+  const receiptCents=expenseTotalCents(receipts),expenseCents=expenseTotalCents(expenses);
+  const inCash=commissions.creditiReceived+receiptCents;
+  return {commissions:commissions.creditiReceived,receipts:receiptCents,expenses:expenseCents,inCash,afterExpenses:inCash-expenseCents};
+}
+function appendReceiptClosing(doc,y,ledger,layout){
+  const {letterhead,section,table}=layout;
+  if(y>doc.internal.pageSize.getHeight()-180){doc.addPage();y=letterhead(doc);}
+  y=section(doc,'RECEITAS - '+(ledger.closed?'COMPETÊNCIA FECHADA':'COMPETÊNCIA ABERTA'),y);
+  const items=expenseNatureGroups(ledger).flatMap(group=>group.items);
+  y=table(doc,y,['Data','Descrição da receita','Natureza','Valor'],items.map(item=>[item.date,item.name,expenseNatureLabel(item),formatBRL(item.cents/100)]),['','TOTAL DAS RECEITAS DO MÊS','',formatBRL(expenseTotalCents(ledger)/100)]);
+  if(y>doc.internal.pageSize.getHeight()-160){doc.addPage();y=letterhead(doc);}
+  return table(doc,y,['Receitas por natureza','Valor'],expenseNatureGroups(ledger).map(group=>[group.label,formatBRL(group.total/100)]),['TOTAL DAS RECEITAS',formatBRL(expenseTotalCents(ledger)/100)]);
+}
+function appendCashClosing(doc,y,commissions,expenses,receipts,layout){
+  const {letterhead,section,table}=layout;
+  const cash=monthlyCashReport(commissions,expenses,receipts);
+  if(y>doc.internal.pageSize.getHeight()-290){doc.addPage();y=letterhead(doc);}
+  y=section(doc,'RESUMO FINAL DO MÊS',y);
+  return table(doc,y,['Descrição','Valor'],[
+    ['Comissão Crediti confirmada como recebida',formatBRL(cash.commissions/100)],
+    ...expenseNatureGroups(receipts).map(group=>['(+) Receitas · '+group.label,formatBRL(group.total/100)]),
+    ...expenseNatureGroups(expenses).map(group=>['(-) Despesas · '+group.label,formatBRL(group.total/100)]),
+    ['Saldo após despesas',formatBRL(cash.afterExpenses/100)]
+  ],['SALDO NO CAIXA (antes das despesas)',formatBRL(cash.inCash/100)]);
+}
+function PrivateReceipts({ledger,year,monthIdx,onEditingChange,onExport}){
+  const [draft,setDraft]=useState(null),[notice,setNotice]=useState(''),[exporting,setExporting]=useState(false);
+  const receiptForm=React.useRef(null);
+  useEffect(()=>{if(draft)receiptForm.current?.scrollIntoView({block:'start',behavior:'instant'});},[draft?.id]);
+  useEffect(()=>{onEditingChange(Boolean(draft));return()=>onEditingChange(false);},[Boolean(draft)]);
+  const items=ledger.data.items.filter(item=>!item.deletedAt).sort((a,b)=>a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''))||a.name.localeCompare(b.name));
+  const removed=ledger.data.items.filter(item=>item.deletedAt);
+  const disabled=ledger.busy||!ledger.ready||exporting;
+  function newReceipt(){
+    const now=new Date(),day=now.getFullYear()===year&&now.getMonth()===monthIdx?now.getDate():1;
+    setNotice('');setDraft({id:uid(),date:`${String(day).padStart(2,'0')}/${String(monthIdx+1).padStart(2,'0')}/${year}`,name:'',amount:'',nature:'',original:null});
+  }
+  async function save(event){
+    event.preventDefault();setNotice('');
+    try{const item=validateReceiptDraft(draft,year,monthIdx);if(await ledger.mutate({type:draft.original?'edit':'add',item,original:draft.original})){setDraft(null);setNotice('Receita salva.');}}
+    catch(e){setNotice(e.message);}
+  }
+  return <section aria-label="Receitas" className="space-y-4">
+    <div className="flex flex-wrap gap-3 items-center justify-between"><h3 className="font-extrabold text-lg">Receitas</h3><span className="font-bold text-sm border rounded-lg px-3 py-2">{ledger.data.closed?'Competência fechada':'Competência aberta'}</span></div>
+    <p className="text-sm">Lance aqui outras entradas já recebidas. As comissões confirmadas já entram pelo campo Comissão Crediti.</p>
+    {!ledger.ready?<p role="status">{ledger.error || 'Carregando receitas e confirmando conexão…'}</p>:<>
+      <StatCard label={`Total de receitas de ${MESES[monthIdx]} / ${year}`} value={formatBRL(expenseTotalCents(ledger.data)/100)} strong />
+      <div className="grid sm:grid-cols-2 gap-3">{expenseNatureGroups(ledger.data).map(group=><StatCard key={group.nature} label={`Receitas · ${group.label}`} value={formatBRL(group.total/100)} />)}</div>
+      {items.some(item=>expenseNature(item)==='unclassified')&&<p className="text-sm">Escolha a natureza das receitas antigas em Editar. Os valores continuam incluídos no total.</p>}
+      <div className="flex flex-wrap gap-2">
+        {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} onClick={newReceipt} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50">+ Nova receita</button>}
+        <button type="button" disabled={disabled||Boolean(draft)} onClick={async()=>{setNotice('');if(await ledger.mutate({type:ledger.data.closed?'reopen':'close'}))setNotice(ledger.data.closed?'Competência reaberta para edição.':'Competência fechada. As receitas continuam disponíveis para consulta e PDF.');}} className="border rounded-lg px-3 py-2 font-bold disabled:opacity-50">{ledger.data.closed?'Reabrir competência':'Fechar competência'}</button>
+        <button type="button" disabled={disabled||Boolean(draft)} onClick={async()=>{setExporting(true);try{await onExport(ledger.data);}finally{setExporting(false);}}} className="border rounded-lg px-3 py-2 font-bold disabled:opacity-50">{exporting?'Gerando PDF…':'PDF das receitas'}</button>
+      </div>
+      {draft&&<form ref={receiptForm} onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 space-y-3">
+        <label className="block text-sm font-bold">Data<input aria-label="Data da receita" className="input mt-1" inputMode="numeric" value={draft.date} onChange={e=>setDraft({...draft,date:maskDateInput(e.target.value)})} placeholder="DD/MM/AAAA" required /></label>
+        <label className="block text-sm font-bold">Natureza da receita<select aria-label="Natureza da receita" className="input mt-1" value={draft.nature||''} onChange={e=>setDraft({...draft,nature:e.target.value})} required><option value="" disabled>Escolha a natureza</option><option value="crediti">Crediti</option><option value="diversas">Diversas</option></select></label>
+        <label className="block text-sm font-bold">Descrição da receita<input aria-label="Descrição da receita" className="input mt-1 uppercase" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value.toLocaleUpperCase('pt-BR')})} placeholder="EX.: APORTE NO CAIXA" required /></label>
+        <label className="block text-sm font-bold">Valor da receita<input aria-label="Valor da receita" className="input mt-1" inputMode="decimal" value={draft.amount} onChange={e=>setDraft({...draft,amount:maskCurrency(e.target.value).replace(/^R\$\s*/,'')})} placeholder="00.000,00" required /></label>
+        <div className="flex gap-3"><button disabled={disabled||ledger.data.closed} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50">{ledger.busy?'Salvando…':'Salvar receita'}</button><button type="button" disabled={ledger.busy} onClick={()=>setDraft(null)}>Cancelar</button></div>
+      </form>}
+      {!items.length&&<p>Nenhuma receita lançada nesta competência.</p>}
+      {items.map(item=><div key={item.id} className="border rounded-xl p-3"><div className="flex justify-between gap-3"><div className="min-w-0"><div className="font-bold break-words">{item.name}</div><div className="text-sm">{item.date} · Natureza: <b>{expenseNatureLabel(item)}</b></div></div><b className="whitespace-nowrap">{formatBRL(item.cents/100)}</b></div>{!ledger.data.closed&&<div className="flex gap-4 mt-2 text-sm"><button type="button" disabled={disabled||Boolean(draft)} className="font-bold underline" onClick={()=>{setNotice('');setDraft({...item,nature:item.nature||'',amount:formatBRL(item.cents/100).replace(/^R\$\s*/,''),original:{...item}});}}>Editar</button><button type="button" disabled={disabled||Boolean(draft)} className="underline" onClick={async()=>{if(await ledger.mutate({type:'delete',item,original:item}))setNotice('Receita excluída. Você pode restaurá-la abaixo.');}}>Excluir</button></div>}</div>)}
+      {!!removed.length&&<details><summary className="text-sm">Receitas excluídas ({removed.length})</summary>{removed.map(item=><div key={item.id} className="text-sm border rounded-lg p-2 mt-2">{item.date} · {item.name} · {expenseNatureLabel(item)} · {formatBRL(item.cents/100)} {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} className="underline font-bold ml-2" onClick={()=>ledger.mutate({type:'restore',item,original:item})}>Restaurar</button>}</div>)}</details>}
+      <div className="font-extrabold border-t pt-3 flex justify-between gap-3"><span>TOTAL DA COMPETÊNCIA</span><span>{formatBRL(expenseTotalCents(ledger.data)/100)}</span></div>
+    </>}
+    {(notice||ledger.error)&&<p role="status" className="font-bold text-sm">{ledger.error||notice}</p>}
+  </section>;
+}
+
+function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, exportRequested, availableYears, onSelectYear, onSelectMonth, recordsReady, initialTab, onExportExpenses, onExportReceipts}) {
   const [key,setKey] = useState(null);
   const [activeTab,setActiveTab] = useState(initialTab || 'commissions');
   const [expenseEditing,setExpenseEditing] = useState(false);
   const expenseLedger=useExpenseLedger(key,year,monthIdx);
+  const receiptLedger=useExpenseLedger(key,year,monthIdx,'receipts');
+  const [receiptEditing,setReceiptEditing]=useState(false);
   const [password,setPassword] = useState('');
   const [showPassword,setShowPassword] = useState(false);
   const [nameSearch,setNameSearch] = useState('');
@@ -495,9 +572,11 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   const rows = Object.entries(yearData[monthIdx] || {}).flatMap(([sellerId,records]) => (records || []).filter(r=>!r.deletedAt).map(r=>({record:r,id:`${sellerId}:${r.id}`,seller:sellers.find(s=>s.id===sellerId)?.nome || sellers.find(s=>s.id===sellerId)?.name || sellerId})));
   const filteredCommissionRows = filterCommissionRows(rows,nameSearch);
   const closing=monthlyCommissionReport(yearData,monthIdx,sellers,values);
+  const cashReady=expenseLedger.ready&&receiptLedger.ready;
+  const cash=monthlyCashReport(closing,expenseLedger.data,receiptLedger.data);
   const totals={total:closing.crediti,received:closing.creditiReceived,pending:closing.creditiPending,promoter:closing.promoterReceived,extra:closing.extraReceived,partner:closing.partnerPaid};
   const historyYears=[...new Set([...(availableYears || []),year,new Date().getFullYear()+1])].sort((a,b)=>b-a);
-  const historyBusy=busy || exporting || Boolean(edit) || expenseEditing || expenseLedger.busy;
+  const historyBusy=busy || exporting || Boolean(edit) || expenseEditing || receiptEditing || expenseLedger.busy || receiptLedger.busy;
   const historyReady=ready && privateYear===year && recordsReady;
   function selectHistoryMonth(index){
     if(historyBusy)return;
@@ -530,32 +609,36 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   }
   return <div className="app-overlay fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Área privada Crediti">
     <div ref={commissionPanel} className="modal-panel bg-white rounded-2xl p-5 w-full max-w-3xl overflow-y-auto">
-      <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">{activeTab==='expenses'?'Despesas':'Comissão Crediti'}</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
-      {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para acessar as comissões e despesas da Crediti.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
-        <div className="flex flex-wrap gap-2 mb-4" role="group" aria-label="Áreas privadas"><button type="button" aria-pressed={activeTab==='commissions'} disabled={historyBusy} onClick={()=>setActiveTab('commissions')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='commissions'?'bg-[#FDCA01]':''}`}>Comissões Crediti</button><button type="button" aria-pressed={activeTab==='expenses'} disabled={historyBusy} onClick={()=>setActiveTab('expenses')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='expenses'?'bg-[#FDCA01]':''}`}>Despesas</button></div>
+      <div className="flex justify-between gap-3 items-center mb-4"><h2 className="font-extrabold text-xl">{activeTab==='receipts'?'Receitas':activeTab==='expenses'?'Despesas':'Comissão Crediti'}</h2><button onClick={onClose} className="font-bold border rounded-lg px-3 py-2">Ocultar e fechar</button></div>
+      {!key ? <form onSubmit={unlock} className="space-y-3"><p>{exportRequested?'Digite sua senha para gerar o PDF completo da competência, incluindo as comissões privadas.':'Digite sua senha para acessar as comissões, despesas e receitas.'}</p><label htmlFor="crediti-vault-password" className="block">Senha</label><div className="relative"><input id="crediti-vault-password" type={showPassword?'text':'password'} autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)} className="input" style={{paddingRight:100}} required /><button type="button" aria-label={showPassword?'Ocultar senha':'Mostrar senha'} aria-pressed={showPassword} onClick={()=>setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 text-sm"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>{showPassword&&<path d="m3 3 18 18"/>}</svg>{showPassword?'Ocultar':'Mostrar'}</button></div><button disabled={busy} className="bg-[#FDCA01] font-bold rounded-lg px-4 py-2">{busy?'Abrindo…':'Desbloquear'}</button></form> : <>
+        <div className="flex flex-wrap gap-2 mb-4" role="group" aria-label="Áreas privadas"><button type="button" aria-pressed={activeTab==='commissions'} disabled={historyBusy} onClick={()=>setActiveTab('commissions')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='commissions'?'bg-[#FDCA01]':''}`}>Comissões Crediti</button><button type="button" aria-pressed={activeTab==='expenses'} disabled={historyBusy} onClick={()=>setActiveTab('expenses')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='expenses'?'bg-[#FDCA01]':''}`}>Despesas</button><button type="button" aria-pressed={activeTab==='receipts'} disabled={historyBusy} onClick={()=>setActiveTab('receipts')} className={`border rounded-lg px-4 py-2 font-bold disabled:opacity-50 ${activeTab==='receipts'?'bg-[#FDCA01]':''}`}>Receitas</button></div>
         <section className="border border-[#E7DDAE] rounded-xl p-3 mb-4" aria-label="Histórico por competência">
           <div className="flex flex-wrap gap-3 items-center justify-between mb-3"><h3 className="font-bold">Histórico por competência</h3><label className="flex items-center gap-2 text-sm">Ano<select aria-label="Ano do histórico" className="border rounded-lg px-3 py-2" value={year} disabled={historyBusy} onChange={e=>selectHistoryYear(Number(e.target.value))}>{historyYears.map(y=><option key={y} value={y}>{y}</option>)}</select></label></div>
-          <div className="history-months grid grid-cols-3 sm:grid-cols-4 gap-2">{MESES.map((name,index)=>{const count=Object.values(yearData[index] || {}).reduce((sum,list)=>sum+(Array.isArray(list)?list.filter(r=>!r.deletedAt).length:0),0);return <button key={index} type="button" aria-pressed={monthIdx===index} aria-label={`Consultar ${name} de ${year}`} disabled={historyBusy} onClick={()=>selectHistoryMonth(index)} className={`text-left border rounded-lg p-2 disabled:opacity-50 ${monthIdx===index?'bg-[#FDCA01] border-[#D9A400]':'bg-white border-[#E7DDAE]'}`}><span className="block text-sm font-bold">{name}</span><span className="block text-xs">{activeTab==='expenses'?(monthIdx===index&&expenseLedger.ready?`${expenseLedger.data.items.filter(item=>!item.deletedAt).length} despesa(s)`:'Consultar despesas'):(recordsReady?(count?`${count} proposta(s)`:'Sem lançamentos'):'Carregando…')}</span></button>})}</div>
+          <div className="history-months grid grid-cols-3 sm:grid-cols-4 gap-2">{MESES.map((name,index)=>{const count=Object.values(yearData[index] || {}).reduce((sum,list)=>sum+(Array.isArray(list)?list.filter(r=>!r.deletedAt).length:0),0);return <button key={index} type="button" aria-pressed={monthIdx===index} aria-label={`Consultar ${name} de ${year}`} disabled={historyBusy} onClick={()=>selectHistoryMonth(index)} className={`text-left border rounded-lg p-2 disabled:opacity-50 ${monthIdx===index?'bg-[#FDCA01] border-[#D9A400]':'bg-white border-[#E7DDAE]'}`}><span className="block text-sm font-bold">{name}</span><span className="block text-xs">{activeTab==='receipts'?(monthIdx===index&&receiptLedger.ready?`${receiptLedger.data.items.filter(item=>!item.deletedAt).length} receita(s)`:'Consultar receitas'):activeTab==='expenses'?(monthIdx===index&&expenseLedger.ready?`${expenseLedger.data.items.filter(item=>!item.deletedAt).length} despesa(s)`:'Consultar despesas'):(recordsReady?(count?`${count} proposta(s)`:'Sem lançamentos'):'Carregando…')}</span></button>})}</div>
           <p className="text-sm mt-3">Cada competência continua guardada para consulta e PDF. Trocar o mês não apaga os meses anteriores.</p>
-          {(edit||expenseEditing) && <p className="text-sm font-bold mt-2">Salve ou cancele a ficha antes de trocar a competência.</p>}
+          {(edit||expenseEditing||receiptEditing) && <p className="text-sm font-bold mt-2">Salve ou cancele a ficha antes de trocar a competência.</p>}
         </section>
         <p className="text-sm font-bold mb-2" role="status">Competência aberta: {MESES[monthIdx]} / {year}</p>
+        {activeTab==='receipts'&&<PrivateReceipts key={`receipts-${year}-${monthIdx}`} ledger={receiptLedger} year={year} monthIdx={monthIdx} onEditingChange={setReceiptEditing} onExport={onExportReceipts} />}
         {activeTab==='expenses'&&<PrivateExpenses key={`${year}-${monthIdx}`} ledger={expenseLedger} year={year} monthIdx={monthIdx} onEditingChange={setExpenseEditing} onExport={onExportExpenses} />}
         {activeTab==='commissions'&&<>
         <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Confira o resumo e use a busca para lançar ou editar a comissão de um cliente.</p>
         {!historyReady ? <p>Carregando a competência {MESES[monthIdx]} / {year}…</p> : <>
-          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)||!expenseLedger.ready||expenseLedger.busy} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values,expenseLedger.data);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':`Gerar PDF de ${MESES[monthIdx]} / ${year}`} </button><p className="text-sm mt-2">O PDF mostra o caixa confirmado por você, as despesas e o saldo final.</p></div>
+          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)||!cashReady||expenseLedger.busy||receiptLedger.busy} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values,expenseLedger.data,receiptLedger.data);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':`Gerar PDF de ${MESES[monthIdx]} / ${year}`} </button><p className="text-sm mt-2">O PDF mostra as comissões confirmadas, as receitas, as despesas e o saldo final.</p></div>
           <section className="border border-[#E7DDAE] rounded-xl p-4 mb-4" aria-label="Resumo do mês">
             <h3 className="font-extrabold text-lg mb-3">Resumo do mês</h3>
             <dl className="space-y-3">
               {[['Recebido da promotora',closing.promoterReceived],['Recebido por fora',closing.extraReceived],['Comissão paga ao parceiro',closing.partnerPaid],['Comissão da Crediti',closing.crediti]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
+              {receiptLedger.ready?expenseNatureGroups(receiptLedger.data).map(group=><div key={`receipt-${group.nature}`} className="flex justify-between gap-3"><dt>(+) Receitas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(+) Receitas</dt><dd>Carregando…</dd></div>}
               {expenseLedger.ready?expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="flex justify-between gap-3"><dt>(−) Despesas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(−) Despesas</dt><dd>Carregando…</dd></div>}
-              <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{expenseLedger.ready?formatBRL((closing.balance-expenseTotalCents(expenseLedger.data))/100):'Carregando…'}</dd></div>
-              <div className="flex justify-between gap-3 font-bold"><dt>Saldo no caixa</dt><dd className="text-right">{formatBRL(closing.creditiReceived/100)}</dd></div>
+              <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{cashReady?formatBRL(cash.afterExpenses/100):'Carregando…'}</dd></div>
+              <div className="flex justify-between gap-3 font-bold"><dt>Saldo no caixa</dt><dd className="text-right">{cashReady?formatBRL(cash.inCash/100):'Carregando…'}</dd></div>
             </dl>
+            {receiptLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Receitas por natureza"><h4 className="font-bold mb-2">Receitas por natureza</h4><div className="space-y-3">{expenseNatureGroups(receiptLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma receita.</p>}</div>)}</div></section>}
             {expenseLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Despesas por natureza"><h4 className="font-bold mb-2">Despesas por natureza</h4><div className="space-y-3">{expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma despesa.</p>}</div>)}</div></section>}
+            {receiptLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as receitas. Abra Receitas para tentar novamente.</p>}
             {expenseLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as despesas. Abra Despesas para tentar novamente.</p>}
-            <p className="text-sm mt-3">Comissão Crediti que você marcou como recebida em {MESES[monthIdx]} / {year}, já descontado o parceiro.</p>
+            <p className="text-sm mt-3">O caixa soma a comissão Crediti confirmada como recebida e as outras receitas de {MESES[monthIdx]} / {year}. O saldo após despesas desconta os gastos do mês.</p>
             {closing.extraPending>0&&<p className="text-sm mt-2">Por fora ainda a receber: <b>{formatBRL(closing.extraPending/100)}</b>. Confira o recebimento na ficha do cliente.</p>}
           </section>
           <details className="border rounded-xl p-3 mb-4"><summary className="font-bold cursor-pointer">Ver detalhes dos lançamentos</summary>
@@ -565,7 +648,7 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
               <p>Comissão Crediti preenchida por você: <b>{formatBRL(closing.crediti/100)}</b>. Total das comissões líquidas preenchidas por você, já descontado o parceiro.</p>
               <p>Desses valores anotados: {formatBRL(closing.creditiReceived/100)} marcados como recebidos e {formatBRL(closing.creditiPending/100)} a receber.</p>
               {closing.missing>0&&<p>Você ainda não preencheu a comissão Crediti de {closing.missing} proposta(s). Essas propostas só entram no caixa depois que você preencher o valor e marcar “Já entrou no caixa”.</p>}
-              <p>O caixa usa apenas os valores marcados como “Já entrou no caixa”. Promotora, por fora e parceiros aparecem abaixo para consulta e não alteram esse saldo.</p>
+              <p>As comissões entram pelo valor Crediti marcado como recebido. Outras entradas são lançadas em Receitas. O parceiro já está descontado da comissão Crediti.</p>
             </div>
           </details>
           <div className="mb-4"><label htmlFor="commission-name-search" className="block text-sm font-bold mb-1">Procurar por nome ou CPF</label><div className="flex gap-2"><input id="commission-name-search" type="search" className="input" placeholder="Digite o nome ou CPF do cliente" value={nameSearch} onChange={e=>setNameSearch(e.target.value)} />{nameSearch && <button type="button" className="border rounded-lg px-3 font-bold" onClick={()=>setNameSearch('')}>Limpar</button>}</div><p className="text-sm mt-1" role="status">{filteredCommissionRows.length} de {rows.length} proposta(s). Os totais acima são do mês inteiro.</p></div>
@@ -630,13 +713,13 @@ function appendCommissionClosing(doc,y,report,layout) {
     ['Recebido por fora',formatBRL(report.extraReceived/100)],
     ['Comissão paga ao parceiro',formatBRL(report.partnerPaid/100)],
     ['Comissão da Crediti',formatBRL(report.crediti/100)]
-  ],['SALDO NO CAIXA',formatBRL(report.creditiReceived/100)]);
+  ],['COMISSÃO CREDITI CONFIRMADA',formatBRL(report.creditiReceived/100)]);
   room(190);y=section(doc,'DETALHES DOS LANÇAMENTOS',y);
   y=table(doc,y,['Comissão Crediti preenchida por você','Valor'],[
     ['Já entrou no caixa',formatBRL(report.creditiReceived/100)],
     ['Ainda não entrou no caixa',formatBRL(report.creditiPending/100)]
   ],['TOTAL PREENCHIDO',formatBRL(report.crediti/100)]);
-  const notes=['O caixa considera somente a comissão Crediti que você preencheu e marcou como recebida. O parceiro já está descontado desse valor.',`Por fora ainda a receber: ${formatBRL(report.extraPending/100)}. Confira o recebimento na ficha do cliente.`,...(report.missing?[`Falta preencher a comissão Crediti de ${report.missing} proposta(s). Elas só entram no caixa após preencher o valor e confirmar o recebimento.`]:[]),'Os totais de promotora, por fora e parceiros são apresentados para consulta. Não são somados ou descontados novamente do caixa.',`Valores das ${report.count} proposta(s) desta competência. As datas dos recebimentos podem ser de outro mês.`];
+  const notes=['As comissões são consideradas pelo valor Crediti marcado como recebido, já descontado o parceiro. As outras receitas aparecem no resumo final.',`Por fora ainda a receber: ${formatBRL(report.extraPending/100)}. Confira o recebimento na ficha do cliente.`,...(report.missing?[`Falta preencher a comissão Crediti de ${report.missing} proposta(s). Elas só entram no caixa após preencher o valor e confirmar o recebimento.`]:[]),'Os totais de promotora, por fora e parceiros são apresentados para consulta. Não são somados ou descontados novamente do caixa.',`Valores das ${report.count} proposta(s) desta competência. As datas dos recebimentos podem ser de outro mês.`];
   for(const note of notes){doc.setFont('helvetica','normal');doc.setFontSize(8);const lines=doc.splitTextToSize(note,doc.internal.pageSize.getWidth()-80);room(lines.length*11+6);doc.text(lines,40,y);y+=lines.length*11+6;}
   return y;
 }
@@ -747,9 +830,9 @@ function CreditiProducao() {
     return String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   }
 
-  async function generatePDF(type, privateValues = null, expenseData = null) {
+  async function generatePDF(type, privateValues = null, expenseData = null, receiptData = null) {
     setPdfError("");
-    if(type==='mes' && (!privateValues || !expenseData)){setCommissionInitialTab('commissions');setCommissionPdfRequested(true);setCommissionOpen(true);return;}
+    if(type==='mes' && (!privateValues || !expenseData || !receiptData)){setCommissionInitialTab('commissions');setCommissionPdfRequested(true);setCommissionOpen(true);return;}
     if(type==='mes' && (!dataReady || loading || !sellersReady)){setPdfError('Aguarde a confirmação dos dados do mês antes de gerar o PDF.');return;}
     try {
       if (!window.jspdf || !window.jspdf.jsPDF) {
@@ -786,10 +869,19 @@ function CreditiProducao() {
         if(y>700){doc.addPage();y=pdfLetterhead(doc);}
         y=pdfTable(doc,y,['Produção da competência','Valor liberado'],[['TOTAL',formatBRL(monthGrandTotal.valorVenda)]]);
         y=appendCommissionClosing(doc,y,report,{letterhead:pdfLetterhead,section:pdfSectionLabel,table:pdfTable});
-        appendExpenseClosing(doc,y,expenseData,{letterhead:pdfLetterhead,section:pdfSectionLabel,table:pdfTable},report);
+        const layout={letterhead:pdfLetterhead,section:pdfSectionLabel,table:pdfTable};
+        y=appendReceiptClosing(doc,y,receiptData,layout);
+        y=appendExpenseClosing(doc,y,expenseData,layout);
+        appendCashClosing(doc,y,report,expenseData,receiptData,layout);
         doc.save(`fechamento-mensal-${safeFileBit(MESES[monthIdx])}-${year}.pdf`);
       }
 
+      else if(type==='receitas' && receiptData){
+        let y=pdfLetterhead(doc);
+        y=pdfTitle(doc,`Receitas - ${MESES[monthIdx]} / ${year}`,y);
+        appendReceiptClosing(doc,y,receiptData,{letterhead:pdfLetterhead,section:pdfSectionLabel,table:pdfTable});
+        doc.save(`receitas-crediti-${safeFileBit(MESES[monthIdx])}-${year}.pdf`);
+      }
       else if(type==='despesas' && expenseData){
         let y=pdfLetterhead(doc);
         y=pdfTitle(doc,`Despesas - ${MESES[monthIdx]} / ${year}`,y);
@@ -1093,7 +1185,7 @@ function CreditiProducao() {
         .input::placeholder{color:#B8AF87}
       `}</style>
 
-      {commissionOpen && <CommissionVault year={year} monthIdx={monthIdx} yearData={yearData} sellers={sellers} onClose={() => {setCommissionOpen(false);setCommissionPdfRequested(false);}} exportRequested={commissionPdfRequested} initialTab={commissionInitialTab} onExport={(values,expenses)=>generatePDF("mes",values,expenses)} onExportExpenses={expenses=>generatePDF("despesas",null,expenses)} availableYears={availableYears} recordsReady={dataReady && sellersReady && !loading} onSelectMonth={setMonthIdx} onSelectYear={next=>{setAvailableYears(current=>current.includes(next)?current:[...current,next].sort((a,b)=>a-b));setYear(next);}} />}
+      {commissionOpen && <CommissionVault year={year} monthIdx={monthIdx} yearData={yearData} sellers={sellers} onClose={() => {setCommissionOpen(false);setCommissionPdfRequested(false);}} exportRequested={commissionPdfRequested} initialTab={commissionInitialTab} onExport={(values,expenses,receipts)=>generatePDF("mes",values,expenses,receipts)} onExportExpenses={expenses=>generatePDF("despesas",null,expenses)} onExportReceipts={receipts=>generatePDF("receitas",null,null,receipts)} availableYears={availableYears} recordsReady={dataReady && sellersReady && !loading} onSelectMonth={setMonthIdx} onSelectYear={next=>{setAvailableYears(current=>current.includes(next)?current:[...current,next].sort((a,b)=>a-b));setYear(next);}} />}
       {/* ===== Top bar ===== */}
       <header className="sticky top-0 z-30 bg-[#FFFBEE]/95 backdrop-blur border-b border-[#EFE2A8]">
         <div className="app-header-row max-w-[860px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
@@ -1562,6 +1654,7 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
 
