@@ -379,12 +379,14 @@ function useExpenseLedger(key,year,monthIdx,resource='expenses'){
         if(!sameCommissionPayload(payload,snapshot.payload))throw new Error('As despesas mudaram em outro aparelho. Aguarde a atualização e tente salvar novamente.');
         const current=payload?JSON.parse(await vaultDecrypt(key,payload,context)):emptyExpenseLedger();
         const updated=applyExpenseOperation(current,{...operation,at:new Date().toISOString()});
+        const checks=ledgerIntegrityIssues(updated,resource==='receipts'?'Receitas':'Despesas');
+        if(checks.length){const error=new Error(checks.join(' '));error.cashIntegrity=true;throw error;}
         const encrypted=await vaultEncrypt(key,updated,context);
         if(payload)tx.set(backup,{payload,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
         tx.set(ref,{payload:encrypted,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
       });
       return true;
-    }catch(e){if(mounted.current)setError(e.message?.includes('competência')||e.message?.includes('aparelho')||e.message?.includes('despesa')?message(e.message):'Não foi possível salvar. Confira a conexão e tente novamente.');return false;}
+    }catch(e){if(mounted.current)setError(e.cashIntegrity||e.message?.includes('competência')||e.message?.includes('aparelho')||e.message?.includes('despesa')?message(e.message):'Não foi possível salvar. Confira a conexão e tente novamente.');return false;}
     finally{lock.current=false;if(mounted.current)setBusy(false);}
   }
   return {data,ready,busy,error,mutate,scope};
@@ -432,7 +434,9 @@ function PrivateExpenses({ledger,year,monthIdx,onEditingChange,onExport}){
     {(notice||ledger.error)&&<p role="status" className="font-bold text-sm">{ledger.error||notice}</p>}
   </section>;
 }
-function appendExpenseClosing(doc,y,ledger,layout,report){
+function appendExpenseClosing(doc,y,ledger,layout){
+  const checks=ledgerIntegrityIssues(ledger,'Despesas');
+  if(checks.length)throw new Error(checks.join(' '));
   const {letterhead,section,table}=layout;
   if(y>doc.internal.pageSize.getHeight()-180){doc.addPage();y=letterhead(doc);}
   y=section(doc,'DESPESAS - '+(ledger.closed?'COMPETÊNCIA FECHADA':'COMPETÊNCIA ABERTA'),y);
@@ -441,7 +445,6 @@ function appendExpenseClosing(doc,y,ledger,layout,report){
   y=table(doc,y,['Data','Nome da despesa','Natureza','Valor'],items.map(item=>[item.date,item.name,expenseNatureLabel(item),formatBRL(item.cents/100)]),['','TOTAL DAS DESPESAS DO MÊS','',formatBRL(total/100)]);
   if(y>doc.internal.pageSize.getHeight()-160){doc.addPage();y=letterhead(doc);}
   y=table(doc,y,['Despesas por natureza','Valor'],expenseNatureGroups(ledger).map(group=>[group.label,formatBRL(group.total/100)]),['TOTAL DAS DESPESAS',formatBRL(total/100)]);
-  if(report){if(y>doc.internal.pageSize.getHeight()-110){doc.addPage();y=letterhead(doc);}y=table(doc,y,['Resumo final do mês','Valor'],[['Entrou no caixa',formatBRL(report.creditiReceived/100)],...expenseNatureGroups(ledger).map(group=>['(-) Despesas · '+group.label,formatBRL(group.total/100)]),['Saldo após despesas',formatBRL((report.balance-total)/100)]],['COMISSÃO CREDITI CONFIRMADA',formatBRL(report.creditiReceived/100)]);}
   return y;
 }
 
@@ -460,12 +463,32 @@ function validateReceiptDraft(draft,year,monthIdx){
   if(!nature)throw new Error('Informe a natureza da receita.');
   try{return {...validateExpenseDraft({...draft,nature:'crediti'},year,monthIdx),nature};}catch(e){throw new Error(e.message.replaceAll('despesa','receita').replace('nome da receita','descrição da receita'));}
 }
+function ledgerIntegrityIssues(ledger,label){
+  const issues=[];
+  if(!ledger||!Array.isArray(ledger.items))return [`Não foi possível conferir ${label}.`];
+  const ids=new Set();let total=0;
+  for(const item of ledger.items){
+    if(item.deletedAt)continue;
+    if(!item.id||ids.has(item.id))issues.push(`Há um lançamento sem identificação ou repetido em ${label}.`);
+    ids.add(item.id);
+    if(!Number.isSafeInteger(item.cents)||item.cents<=0)issues.push(`Confira o valor de ${item.name||'um lançamento'} em ${label}.`);
+    else {total+=item.cents;if(!Number.isSafeInteger(total))issues.push(`O total de ${label} ultrapassa o limite de cálculo seguro.`);}
+  }
+  return [...new Set(issues)];
+}
 function monthlyCashReport(commissions,expenses,receipts){
+  const issues=[...(commissions.issues||[]),...ledgerIntegrityIssues(expenses,'Despesas'),...ledgerIntegrityIssues(receipts,'Receitas')];
+  if(!Number.isSafeInteger(commissions.creditiReceived)||commissions.creditiReceived<0)issues.push('Confira os valores das comissões Crediti recebidas.');
+  if(issues.length)return {valid:false,issues:[...new Set(issues)],commissions:null,receipts:null,expenses:null,totalReceived:null,inCash:null,afterExpenses:null};
   const receiptCents=expenseTotalCents(receipts),expenseCents=expenseTotalCents(expenses);
-  const inCash=commissions.creditiReceived+receiptCents;
-  return {commissions:commissions.creditiReceived,receipts:receiptCents,expenses:expenseCents,inCash,afterExpenses:inCash-expenseCents};
+  const totalReceived=commissions.creditiReceived+receiptCents;
+  const inCash=totalReceived-expenseCents;
+  if(![totalReceived,inCash].every(Number.isSafeInteger))return {valid:false,issues:['O saldo ultrapassa o limite de cálculo seguro.'],commissions:null,receipts:null,expenses:null,totalReceived:null,inCash:null,afterExpenses:null};
+  return {valid:true,issues:[],commissions:commissions.creditiReceived,receipts:receiptCents,expenses:expenseCents,totalReceived,inCash,afterExpenses:inCash};
 }
 function appendReceiptClosing(doc,y,ledger,layout){
+  const checks=ledgerIntegrityIssues(ledger,'Receitas');
+  if(checks.length)throw new Error(checks.join(' '));
   const {letterhead,section,table}=layout;
   if(y>doc.internal.pageSize.getHeight()-180){doc.addPage();y=letterhead(doc);}
   y=section(doc,'RECEITAS - '+(ledger.closed?'COMPETÊNCIA FECHADA':'COMPETÊNCIA ABERTA'),y);
@@ -477,14 +500,16 @@ function appendReceiptClosing(doc,y,ledger,layout){
 function appendCashClosing(doc,y,commissions,expenses,receipts,layout){
   const {letterhead,section,table}=layout;
   const cash=monthlyCashReport(commissions,expenses,receipts);
+  if(!cash.valid)throw new Error(cash.issues.join(' '));
   if(y>doc.internal.pageSize.getHeight()-290){doc.addPage();y=letterhead(doc);}
   y=section(doc,'RESUMO FINAL DO MÊS',y);
   return table(doc,y,['Descrição','Valor'],[
     ['Comissão Crediti confirmada como recebida',formatBRL(cash.commissions/100)],
     ...receiptNatureGroups(receipts).map(group=>['(+) Receitas · '+group.label,formatBRL(group.total/100)]),
+    ['Total recebido antes das despesas',formatBRL(cash.totalReceived/100)],
     ...expenseNatureGroups(expenses).map(group=>['(-) Despesas · '+group.label,formatBRL(group.total/100)]),
     ['Saldo após despesas',formatBRL(cash.afterExpenses/100)]
-  ],['SALDO NO CAIXA (antes das despesas)',formatBRL(cash.inCash/100)]);
+  ],['SALDO NO CAIXA',formatBRL(cash.inCash/100)]);
 }
 function PrivateReceipts({ledger,year,monthIdx,onEditingChange,onExport}){
   const [draft,setDraft]=useState(null),[notice,setNotice]=useState(''),[exporting,setExporting]=useState(false);
@@ -558,14 +583,14 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
   useEffect(() => {
     if (!key) return;
     let active=true, revision=0;
-    const stop = db.collection('crediti_storage').doc('__private_commissions_' + year).onSnapshot(async snap => {
+    const stop = db.collection('crediti_storage').doc('__private_commissions_' + year).onSnapshot({includeMetadataChanges:true},async snap => {
       const version=++revision;
       if(active)setReady(false);
       try {
         const payloads=snap.exists ? snap.data().entries || {} : {};
         const decoded={};
         for (const [id,payload] of Object.entries(payloads)) decoded[id]=JSON.parse(await vaultDecrypt(key,payload,context(id)));
-        if (active && version===revision) {setValues(decoded);setEncrypted(payloads);setPrivateYear(year);setReady(true);setMessage('');}
+        if (active && version===revision) {setValues(decoded);setEncrypted(payloads);setPrivateYear(year);setReady(!snap.metadata?.fromCache&&!snap.metadata?.hasPendingWrites);setMessage('');}
       } catch(e) {if(active){setReady(false);setValues({});setMessage('Não foi possível abrir os valores. Nenhum dado foi alterado.');}}
     },() => {if(active){setReady(false);setValues({});setMessage('Não foi possível carregar as comissões. Confira a conexão e tente novamente.');}});
     return () => {active=false;stop();};
@@ -636,21 +661,23 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
         {activeTab==='commissions'&&<>
         <p className="text-sm mb-3">{MESES[monthIdx]} / {year}. Confira o resumo e use a busca para lançar ou editar a comissão de um cliente.</p>
         {!historyReady ? <p>Carregando a competência {MESES[monthIdx]} / {year}…</p> : <>
-          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)||!cashReady||expenseLedger.busy||receiptLedger.busy} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values,expenseLedger.data,receiptLedger.data);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':`Gerar PDF de ${MESES[monthIdx]} / ${year}`} </button><p className="text-sm mt-2">O PDF mostra as comissões confirmadas, as receitas, as despesas e o saldo final.</p></div>
+          <div className="mb-4"><button type="button" disabled={busy||exporting||Boolean(edit)||!cashReady||!cash.valid||expenseLedger.busy||receiptLedger.busy} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50" onClick={async()=>{setExporting(true);try{await onExport(values,expenseLedger.data,receiptLedger.data);}finally{if(alive.current)setExporting(false);}}}>{exporting?'Gerando PDF…':`Gerar PDF de ${MESES[monthIdx]} / ${year}`} </button><p className="text-sm mt-2">O PDF mostra as comissões confirmadas, as receitas, as despesas e o saldo final.</p></div>
           <section className="border border-[#E7DDAE] rounded-xl p-4 mb-4" aria-label="Resumo do mês">
             <h3 className="font-extrabold text-lg mb-3">Resumo do mês</h3>
+            {cashReady&&(cash.valid?<p role="status" className="text-sm mb-3">Conferência automática: entradas − despesas = saldo no caixa.</p>:<div role="alert" className="border border-red-300 bg-red-50 rounded-lg p-3 mb-3 text-sm"><p className="font-bold">Confira os lançamentos. O saldo e o PDF financeiro ficam indisponíveis até a correção.</p><ul className="list-disc pl-5 mt-2">{cash.issues.map(issue=><li key={issue}>{issue}</li>)}</ul></div>)}
             <dl className="space-y-3">
               {[['Recebido da promotora',closing.promoterReceived],['Recebido por fora',closing.extraReceived],['Comissão paga ao parceiro',closing.partnerPaid],['Comissão da Crediti',closing.crediti]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
               {receiptLedger.ready?receiptNatureGroups(receiptLedger.data).map(group=><div key={`receipt-${group.nature}`} className="flex justify-between gap-3"><dt>(+) Receitas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(+) Receitas</dt><dd>Carregando…</dd></div>}
+              <div className="flex justify-between gap-3"><dt>Total recebido antes das despesas</dt><dd className="font-bold text-right">{cashReady?(cash.valid?formatBRL(cash.totalReceived/100):'Conferir lançamentos'):'Carregando…'}</dd></div>
               {expenseLedger.ready?expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="flex justify-between gap-3"><dt>(−) Despesas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(−) Despesas</dt><dd>Carregando…</dd></div>}
-              <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{cashReady?formatBRL(cash.afterExpenses/100):'Carregando…'}</dd></div>
-              <div className="flex justify-between gap-3 font-bold"><dt>Saldo no caixa</dt><dd className="text-right">{cashReady?formatBRL(cash.inCash/100):'Carregando…'}</dd></div>
+              <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{cashReady?(cash.valid?formatBRL(cash.afterExpenses/100):'Conferir lançamentos'):'Carregando…'}</dd></div>
+              <div className="flex justify-between gap-3 font-bold"><dt>Saldo no caixa</dt><dd className="text-right">{cashReady?(cash.valid?formatBRL(cash.inCash/100):'Conferir lançamentos'):'Carregando…'}</dd></div>
             </dl>
             {receiptLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Receitas por natureza"><h4 className="font-bold mb-2">Receitas por natureza</h4><div className="space-y-3">{receiptNatureGroups(receiptLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma receita.</p>}</div>)}</div></section>}
             {expenseLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Despesas por natureza"><h4 className="font-bold mb-2">Despesas por natureza</h4><div className="space-y-3">{expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma despesa.</p>}</div>)}</div></section>}
             {receiptLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as receitas. Abra Receitas para tentar novamente.</p>}
             {expenseLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as despesas. Abra Despesas para tentar novamente.</p>}
-            <p className="text-sm mt-3">O caixa soma a comissão Crediti confirmada como recebida e as outras receitas de {MESES[monthIdx]} / {year}. O saldo após despesas desconta os gastos do mês.</p>
+            <p className="text-sm mt-3">Saldo no caixa: comissão Crediti confirmada como recebida + outras receitas − despesas de {MESES[monthIdx]} / {year}.</p>
             {closing.extraPending>0&&<p className="text-sm mt-2">Por fora ainda a receber: <b>{formatBRL(closing.extraPending/100)}</b>. Confira o recebimento na ficha do cliente.</p>}
           </section>
           <details className="border rounded-xl p-3 mb-4"><summary className="font-bold cursor-pointer">Ver detalhes dos lançamentos</summary>
@@ -684,12 +711,16 @@ function commissionReceiptStatus(record,value) {
   };
 }
 function monthlyCommissionReport(yearData, monthIdx, sellers, privateValues) {
-  const report={partners:[],extraReceived:0,extraPending:0,promoterReceived:0,partnerPaid:0,partnerPending:0,crediti:0,creditiReceived:0,creditiPending:0,missing:0,count:0};
+  const report={issues:[],partners:[],extraReceived:0,extraPending:0,promoterReceived:0,partnerPaid:0,partnerPending:0,crediti:0,creditiReceived:0,creditiPending:0,missing:0,count:0};
   for (const [sellerId,records] of Object.entries(yearData[monthIdx] || {})) {
     const partner={id:sellerId,name:sellers.find(s=>s.id===sellerId)?.nome || sellerId,extraReceived:0,extraPending:0,promoterReceived:0,partnerPaid:0,partnerPending:0,crediti:0,count:0};
+    const seenIds=new Set();
     for (const record of records || []) {
       if(record.deletedAt)continue;
+      if(!record.id||seenIds.has(record.id))report.issues.push('Há uma proposta repetida ou sem identificação. Confira os lançamentos antes de fechar o caixa.');
+      seenIds.add(record.id);
       const value=privateValues[`${sellerId}:${record.id}`];
+      if(value){for(const field of ['cents','promoterCents']){if((field==='cents'||value[field]!=null)&&(!Number.isSafeInteger(value[field])||value[field]<0))report.issues.push(`Confira a comissão de ${record.cliente||'uma proposta'}: há um valor inválido.`);}}
       const extra=Math.round(parseNum(record.comissaoExtra)*100),payment=Math.round(parseNum(record.comissaoParceiro)*100);
       const status=commissionReceiptStatus(record,value);
       partner[status.extraReceived?'extraReceived':'extraPending']+=extra;
@@ -867,6 +898,8 @@ function CreditiProducao() {
 
       else if (type === "mes") {
         const report=monthlyCommissionReport(yearData,monthIdx,sellers,privateValues);
+        const cash=monthlyCashReport(report,expenseData,receiptData);
+        if(!cash.valid){setPdfError('Confira os lançamentos antes de gerar o PDF: '+cash.issues.join(' '));return;}
         let y=pdfLetterhead(doc);
         y=pdfTitle(doc,`Fechamento da competência - ${MESES[monthIdx]} / ${year}`,y);
         for(const seller of sellers){
@@ -1666,6 +1699,7 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
 
