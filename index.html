@@ -323,7 +323,7 @@ function validateExpenseDraft(draft,year,monthIdx){
   if(!['crediti','diversas'].includes(draft.nature))throw new Error('Escolha a natureza da despesa: Crediti ou Diversas.');
   return {id:draft.id,date:draft.date,name,cents,nature:draft.nature};
 }
-function sameExpenseItem(a,b){return Boolean(a&&b)&&a.id===b.id&&a.date===b.date&&a.name===b.name&&a.cents===b.cents&&expenseNature(a)===expenseNature(b)&&Boolean(a.deletedAt)===Boolean(b.deletedAt);}
+function sameExpenseItem(a,b){return Boolean(a&&b)&&a.id===b.id&&a.date===b.date&&a.name===b.name&&a.cents===b.cents&&String(a.nature||'')===String(b.nature||'')&&Boolean(a.deletedAt)===Boolean(b.deletedAt);}
 function applyExpenseOperation(current,operation){
   const next={...current,items:current.items.map(item=>({...item}))};
   if(operation.type==='reopen')return {...next,closed:false,reopenedAt:operation.at};
@@ -359,7 +359,7 @@ function useExpenseLedger(key,year,monthIdx,resource='expenses'){
         const payload=snap.exists?snap.data().payload:null;
         const data=payload?JSON.parse(await vaultDecrypt(key,payload,context)):emptyExpenseLedger();
         if(snap.exists&&!payload)throw new Error('invalid');
-        if(!Array.isArray(data.items)||typeof data.closed!=='boolean'||data.items.some(item=>!item.id||!Number.isSafeInteger(item.cents)||item.cents<=0||typeof item.name!=='string'||typeof item.date!=='string'||(item.nature!=null&&!['crediti','diversas'].includes(item.nature))))throw new Error('invalid');
+        if(!Array.isArray(data.items)||typeof data.closed!=='boolean'||data.items.some(item=>!item.id||!Number.isSafeInteger(item.cents)||item.cents<=0||typeof item.name!=='string'||typeof item.date!=='string'||(item.nature!=null&&(resource==='receipts'?typeof item.nature!=='string':!['crediti','diversas'].includes(item.nature)))))throw new Error('invalid');
         if(active&&version===revision){setSnapshot({scope,resource,data,payload,confirmed:!snap.metadata?.fromCache&&!snap.metadata?.hasPendingWrites});setError('');}
       }catch(e){if(active&&version===revision){setSnapshot(null);setError(message('Não foi possível abrir as despesas. Os dados existentes foram preservados.'));}}
     },()=>{if(active){setSnapshot(null);setError(message('Não foi possível carregar as despesas. Confira a conexão.'));}});
@@ -445,8 +445,20 @@ function appendExpenseClosing(doc,y,ledger,layout,report){
   return y;
 }
 
+function receiptNatureLabel(item){return String(item.nature||'').trim().toLocaleUpperCase('pt-BR')||'NÃO INFORMADA';}
+function receiptNatureGroups(ledger){
+  const groups=new Map();
+  for(const item of ledger.items.filter(item=>!item.deletedAt)){
+    const label=receiptNatureLabel(item);
+    if(!groups.has(label))groups.set(label,{nature:label,label,items:[],total:0});
+    const group=groups.get(label);group.items.push(item);group.total+=item.cents;
+  }
+  return [...groups.values()].sort((a,b)=>a.label.localeCompare(b.label,'pt-BR')).map(group=>({...group,items:group.items.sort((a,b)=>a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''))||a.name.localeCompare(b.name))}));
+}
 function validateReceiptDraft(draft,year,monthIdx){
-  try{return validateExpenseDraft(draft,year,monthIdx);}catch(e){throw new Error(e.message.replaceAll('despesa','receita'));}
+  const nature=String(draft.nature||'').trim().toLocaleUpperCase('pt-BR');
+  if(!nature)throw new Error('Informe a natureza da receita.');
+  try{return {...validateExpenseDraft({...draft,nature:'crediti'},year,monthIdx),nature};}catch(e){throw new Error(e.message.replaceAll('despesa','receita').replace('nome da receita','descrição da receita'));}
 }
 function monthlyCashReport(commissions,expenses,receipts){
   const receiptCents=expenseTotalCents(receipts),expenseCents=expenseTotalCents(expenses);
@@ -457,10 +469,10 @@ function appendReceiptClosing(doc,y,ledger,layout){
   const {letterhead,section,table}=layout;
   if(y>doc.internal.pageSize.getHeight()-180){doc.addPage();y=letterhead(doc);}
   y=section(doc,'RECEITAS - '+(ledger.closed?'COMPETÊNCIA FECHADA':'COMPETÊNCIA ABERTA'),y);
-  const items=expenseNatureGroups(ledger).flatMap(group=>group.items);
-  y=table(doc,y,['Data','Descrição da receita','Natureza','Valor'],items.map(item=>[item.date,item.name,expenseNatureLabel(item),formatBRL(item.cents/100)]),['','TOTAL DAS RECEITAS DO MÊS','',formatBRL(expenseTotalCents(ledger)/100)]);
+  const items=receiptNatureGroups(ledger).flatMap(group=>group.items);
+  y=table(doc,y,['Data','Descrição da receita','Natureza','Valor'],items.map(item=>[item.date,item.name,receiptNatureLabel(item),formatBRL(item.cents/100)]),['','TOTAL DAS RECEITAS DO MÊS','',formatBRL(expenseTotalCents(ledger)/100)]);
   if(y>doc.internal.pageSize.getHeight()-160){doc.addPage();y=letterhead(doc);}
-  return table(doc,y,['Receitas por natureza','Valor'],expenseNatureGroups(ledger).map(group=>[group.label,formatBRL(group.total/100)]),['TOTAL DAS RECEITAS',formatBRL(expenseTotalCents(ledger)/100)]);
+  return table(doc,y,['Receitas por natureza','Valor'],receiptNatureGroups(ledger).map(group=>[group.label,formatBRL(group.total/100)]),['TOTAL DAS RECEITAS',formatBRL(expenseTotalCents(ledger)/100)]);
 }
 function appendCashClosing(doc,y,commissions,expenses,receipts,layout){
   const {letterhead,section,table}=layout;
@@ -469,7 +481,7 @@ function appendCashClosing(doc,y,commissions,expenses,receipts,layout){
   y=section(doc,'RESUMO FINAL DO MÊS',y);
   return table(doc,y,['Descrição','Valor'],[
     ['Comissão Crediti confirmada como recebida',formatBRL(cash.commissions/100)],
-    ...expenseNatureGroups(receipts).map(group=>['(+) Receitas · '+group.label,formatBRL(group.total/100)]),
+    ...receiptNatureGroups(receipts).map(group=>['(+) Receitas · '+group.label,formatBRL(group.total/100)]),
     ...expenseNatureGroups(expenses).map(group=>['(-) Despesas · '+group.label,formatBRL(group.total/100)]),
     ['Saldo após despesas',formatBRL(cash.afterExpenses/100)]
   ],['SALDO NO CAIXA (antes das despesas)',formatBRL(cash.inCash/100)]);
@@ -496,8 +508,8 @@ function PrivateReceipts({ledger,year,monthIdx,onEditingChange,onExport}){
     <p className="text-sm">Lance aqui outras entradas já recebidas. As comissões confirmadas já entram pelo campo Comissão Crediti.</p>
     {!ledger.ready?<p role="status">{ledger.error || 'Carregando receitas e confirmando conexão…'}</p>:<>
       <StatCard label={`Total de receitas de ${MESES[monthIdx]} / ${year}`} value={formatBRL(expenseTotalCents(ledger.data)/100)} strong />
-      <div className="grid sm:grid-cols-2 gap-3">{expenseNatureGroups(ledger.data).map(group=><StatCard key={group.nature} label={`Receitas · ${group.label}`} value={formatBRL(group.total/100)} />)}</div>
-      {items.some(item=>expenseNature(item)==='unclassified')&&<p className="text-sm">Escolha a natureza das receitas antigas em Editar. Os valores continuam incluídos no total.</p>}
+      <div className="grid sm:grid-cols-2 gap-3">{receiptNatureGroups(ledger.data).map(group=><StatCard key={group.nature} label={`Receitas · ${group.label}`} value={formatBRL(group.total/100)} />)}</div>
+      {items.some(item=>!String(item.nature||'').trim())&&<p className="text-sm">Preencha a natureza das receitas antigas em Editar. Os valores continuam incluídos no total.</p>}
       <div className="flex flex-wrap gap-2">
         {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} onClick={newReceipt} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50">+ Nova receita</button>}
         <button type="button" disabled={disabled||Boolean(draft)} onClick={async()=>{setNotice('');if(await ledger.mutate({type:ledger.data.closed?'reopen':'close'}))setNotice(ledger.data.closed?'Competência reaberta para edição.':'Competência fechada. As receitas continuam disponíveis para consulta e PDF.');}} className="border rounded-lg px-3 py-2 font-bold disabled:opacity-50">{ledger.data.closed?'Reabrir competência':'Fechar competência'}</button>
@@ -505,14 +517,14 @@ function PrivateReceipts({ledger,year,monthIdx,onEditingChange,onExport}){
       </div>
       {draft&&<form ref={receiptForm} onSubmit={save} className="border-2 border-[#FDCA01] rounded-xl p-4 space-y-3">
         <label className="block text-sm font-bold">Data<input aria-label="Data da receita" className="input mt-1" inputMode="numeric" value={draft.date} onChange={e=>setDraft({...draft,date:maskDateInput(e.target.value)})} placeholder="DD/MM/AAAA" required /></label>
-        <label className="block text-sm font-bold">Natureza da receita<select aria-label="Natureza da receita" className="input mt-1" value={draft.nature||''} onChange={e=>setDraft({...draft,nature:e.target.value})} required><option value="" disabled>Escolha a natureza</option><option value="crediti">Crediti</option><option value="diversas">Diversas</option></select></label>
+        <label className="block text-sm font-bold">Natureza da receita<input aria-label="Natureza da receita" list="receipt-nature-options" className="input mt-1 uppercase" value={draft.nature||''} onChange={e=>setDraft({...draft,nature:e.target.value.toLocaleUpperCase('pt-BR')})} placeholder="Escreva a origem da receita" required /><datalist id="receipt-nature-options">{receiptNatureGroups(ledger.data).filter(group=>group.nature!=='NÃO INFORMADA').map(group=><option key={group.nature} value={group.label} />)}</datalist></label>
         <label className="block text-sm font-bold">Descrição da receita<input aria-label="Descrição da receita" className="input mt-1 uppercase" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value.toLocaleUpperCase('pt-BR')})} placeholder="EX.: APORTE NO CAIXA" required /></label>
         <label className="block text-sm font-bold">Valor da receita<input aria-label="Valor da receita" className="input mt-1" inputMode="decimal" value={draft.amount} onChange={e=>setDraft({...draft,amount:maskCurrency(e.target.value).replace(/^R\$\s*/,'')})} placeholder="00.000,00" required /></label>
         <div className="flex gap-3"><button disabled={disabled||ledger.data.closed} className="bg-[#FDCA01] rounded-lg px-4 py-2 font-bold disabled:opacity-50">{ledger.busy?'Salvando…':'Salvar receita'}</button><button type="button" disabled={ledger.busy} onClick={()=>setDraft(null)}>Cancelar</button></div>
       </form>}
       {!items.length&&<p>Nenhuma receita lançada nesta competência.</p>}
-      {items.map(item=><div key={item.id} className="border rounded-xl p-3"><div className="flex justify-between gap-3"><div className="min-w-0"><div className="font-bold break-words">{item.name}</div><div className="text-sm">{item.date} · Natureza: <b>{expenseNatureLabel(item)}</b></div></div><b className="whitespace-nowrap">{formatBRL(item.cents/100)}</b></div>{!ledger.data.closed&&<div className="flex gap-4 mt-2 text-sm"><button type="button" disabled={disabled||Boolean(draft)} className="font-bold underline" onClick={()=>{setNotice('');setDraft({...item,nature:item.nature||'',amount:formatBRL(item.cents/100).replace(/^R\$\s*/,''),original:{...item}});}}>Editar</button><button type="button" disabled={disabled||Boolean(draft)} className="underline" onClick={async()=>{if(await ledger.mutate({type:'delete',item,original:item}))setNotice('Receita excluída. Você pode restaurá-la abaixo.');}}>Excluir</button></div>}</div>)}
-      {!!removed.length&&<details><summary className="text-sm">Receitas excluídas ({removed.length})</summary>{removed.map(item=><div key={item.id} className="text-sm border rounded-lg p-2 mt-2">{item.date} · {item.name} · {expenseNatureLabel(item)} · {formatBRL(item.cents/100)} {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} className="underline font-bold ml-2" onClick={()=>ledger.mutate({type:'restore',item,original:item})}>Restaurar</button>}</div>)}</details>}
+      {items.map(item=><div key={item.id} className="border rounded-xl p-3"><div className="flex justify-between gap-3"><div className="min-w-0"><div className="font-bold break-words">{item.name}</div><div className="text-sm">{item.date} · Natureza: <b>{receiptNatureLabel(item)}</b></div></div><b className="whitespace-nowrap">{formatBRL(item.cents/100)}</b></div>{!ledger.data.closed&&<div className="flex gap-4 mt-2 text-sm"><button type="button" disabled={disabled||Boolean(draft)} className="font-bold underline" onClick={()=>{setNotice('');setDraft({...item,nature:item.nature?receiptNatureLabel(item):'',amount:formatBRL(item.cents/100).replace(/^R\$\s*/,''),original:{...item}});}}>Editar</button><button type="button" disabled={disabled||Boolean(draft)} className="underline" onClick={async()=>{if(await ledger.mutate({type:'delete',item,original:item}))setNotice('Receita excluída. Você pode restaurá-la abaixo.');}}>Excluir</button></div>}</div>)}
+      {!!removed.length&&<details><summary className="text-sm">Receitas excluídas ({removed.length})</summary>{removed.map(item=><div key={item.id} className="text-sm border rounded-lg p-2 mt-2">{item.date} · {item.name} · {receiptNatureLabel(item)} · {formatBRL(item.cents/100)} {!ledger.data.closed&&<button type="button" disabled={disabled||Boolean(draft)} className="underline font-bold ml-2" onClick={()=>ledger.mutate({type:'restore',item,original:item})}>Restaurar</button>}</div>)}</details>}
       <div className="font-extrabold border-t pt-3 flex justify-between gap-3"><span>TOTAL DA COMPETÊNCIA</span><span>{formatBRL(expenseTotalCents(ledger.data)/100)}</span></div>
     </>}
     {(notice||ledger.error)&&<p role="status" className="font-bold text-sm">{ledger.error||notice}</p>}
@@ -629,12 +641,12 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
             <h3 className="font-extrabold text-lg mb-3">Resumo do mês</h3>
             <dl className="space-y-3">
               {[['Recebido da promotora',closing.promoterReceived],['Recebido por fora',closing.extraReceived],['Comissão paga ao parceiro',closing.partnerPaid],['Comissão da Crediti',closing.crediti]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
-              {receiptLedger.ready?expenseNatureGroups(receiptLedger.data).map(group=><div key={`receipt-${group.nature}`} className="flex justify-between gap-3"><dt>(+) Receitas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(+) Receitas</dt><dd>Carregando…</dd></div>}
+              {receiptLedger.ready?receiptNatureGroups(receiptLedger.data).map(group=><div key={`receipt-${group.nature}`} className="flex justify-between gap-3"><dt>(+) Receitas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(+) Receitas</dt><dd>Carregando…</dd></div>}
               {expenseLedger.ready?expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="flex justify-between gap-3"><dt>(−) Despesas · {group.label}</dt><dd className="font-bold text-right">{formatBRL(group.total/100)}</dd></div>):<div className="flex justify-between gap-3"><dt>(−) Despesas</dt><dd>Carregando…</dd></div>}
               <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{cashReady?formatBRL(cash.afterExpenses/100):'Carregando…'}</dd></div>
               <div className="flex justify-between gap-3 font-bold"><dt>Saldo no caixa</dt><dd className="text-right">{cashReady?formatBRL(cash.inCash/100):'Carregando…'}</dd></div>
             </dl>
-            {receiptLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Receitas por natureza"><h4 className="font-bold mb-2">Receitas por natureza</h4><div className="space-y-3">{expenseNatureGroups(receiptLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma receita.</p>}</div>)}</div></section>}
+            {receiptLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Receitas por natureza"><h4 className="font-bold mb-2">Receitas por natureza</h4><div className="space-y-3">{receiptNatureGroups(receiptLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma receita.</p>}</div>)}</div></section>}
             {expenseLedger.ready&&<section className="border-t mt-4 pt-3" aria-label="Despesas por natureza"><h4 className="font-bold mb-2">Despesas por natureza</h4><div className="space-y-3">{expenseNatureGroups(expenseLedger.data).map(group=><div key={group.nature} className="border rounded-lg p-3"><div className="flex justify-between gap-3 font-bold"><span>{group.label}</span><span className="text-right">{formatBRL(group.total/100)}</span></div>{group.items.length?<ul className="mt-2 space-y-2">{group.items.map(item=><li key={item.id} className="flex justify-between gap-3 text-sm"><span className="min-w-0 break-words">{item.name}<span className="block text-xs">{item.date}</span></span><span className="text-right">{formatBRL(item.cents/100)}</span></li>)}</ul>:<p className="text-sm mt-2">Nenhuma despesa.</p>}</div>)}</div></section>}
             {receiptLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as receitas. Abra Receitas para tentar novamente.</p>}
             {expenseLedger.error&&<p role="status" className="text-sm mt-3">Não foi possível carregar as despesas. Abra Despesas para tentar novamente.</p>}
@@ -1654,6 +1666,7 @@ if (window.__FIREBASE_NOT_CONFIGURED__) {
 </script>
 </body>
 </html>
+
 
 
 
