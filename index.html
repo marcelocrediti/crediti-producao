@@ -532,7 +532,7 @@ function CommissionVault({year, monthIdx, yearData, sellers, onClose, onExport, 
           <section className="border border-[#E7DDAE] rounded-xl p-4 mb-4" aria-label="Resumo do mês">
             <h3 className="font-extrabold text-lg mb-3">Resumo do mês</h3>
             <dl className="space-y-3">
-              {[['Entrou no caixa',closing.creditiReceived]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
+              {[['Saldo no caixa',closing.creditiReceived],['Recebido da promotora',closing.promoterReceived],['Recebido por fora',closing.extraReceived],['Comissão paga ao parceiro',closing.partnerPaid],['Comissão da Crediti',closing.crediti]].map(([label,cents])=><div key={label} className="flex justify-between gap-3"><dt>{label}</dt><dd className="font-bold text-right">{formatBRL(cents/100)}</dd></div>)}
               <div className="flex justify-between gap-3"><dt>(−) Despesas Crediti</dt><dd className="font-bold text-right">{expenseLedger.ready?formatBRL(expenseTotalCents(expenseLedger.data)/100):'Carregando…'}</dd></div>
               <div className="flex justify-between gap-3 bg-[#FFF3B5] rounded-lg p-3 font-extrabold"><dt>Saldo após despesas</dt><dd className="text-right">{expenseLedger.ready?formatBRL((closing.balance-expenseTotalCents(expenseLedger.data))/100):'Carregando…'}</dd></div>
             </dl>
@@ -608,8 +608,11 @@ function appendCommissionClosing(doc,y,report,layout) {
   y=table(doc,y,['Parceiro / vendedor','Total lançado','Recebido','A receber'],report.partners.map(p=>[p.name,formatBRL((p.extraReceived+p.extraPending)/100),formatBRL(p.extraReceived/100),formatBRL(p.extraPending/100)]),['TOTAL',formatBRL(report.extraTotal/100),formatBRL(report.extraReceived/100),formatBRL(report.extraPending/100)]);
   room(150);y=section(doc,'CAIXA DA CREDITI',y);
   y=table(doc,y,['Descrição','Valor'],[
-    ['Comissão Crediti marcada como recebida',formatBRL(report.creditiReceived/100)]
-  ],['ENTROU NO CAIXA',formatBRL(report.creditiReceived/100)]);
+    ['Recebido da promotora',formatBRL(report.promoterReceived/100)],
+    ['Recebido por fora',formatBRL(report.extraReceived/100)],
+    ['Comissão paga ao parceiro',formatBRL(report.partnerPaid/100)],
+    ['Comissão da Crediti',formatBRL(report.crediti/100)]
+  ],['SALDO NO CAIXA',formatBRL(report.creditiReceived/100)]);
   room(190);y=section(doc,'DETALHES DOS LANÇAMENTOS',y);
   y=table(doc,y,['Comissão Crediti preenchida por você','Valor'],[
     ['Já entrou no caixa',formatBRL(report.creditiReceived/100)],
